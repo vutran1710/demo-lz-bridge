@@ -1,27 +1,100 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { decodeEventLog, hexToString, isHex, stringToHex, pad, type Hex } from 'viem'
+import { useEffect, useMemo, useState } from 'react'
+import { getAddress, hexToString, isHex, stringToHex, type Hex } from 'viem'
 import './styles.css'
-import type { Deployment, ChainCfg } from './types'
+import type { ChainCfg, Deployment, WorkerActivity, WorkerStatus } from './types'
 import { publicFor, walletFor } from './viem'
-import { userAppAbi, sendLibAbi, receiveLibAbi } from './abi'
+import { endpointAbi, sendLibAbi, userAppAbi } from './abi'
 import { decodePacket } from './codec'
 import { System } from './System'
 
-type Flight = {
+type PendingSend = {
   id: string
+  txHash: Hex
+  submittedAt: number
   walletLabel: string
+  walletAddress: Hex
   src: string
   dst: string
+  payload: Hex
+}
+
+type Transfer = {
+  id: string
+  walletLabel: string
+  walletAddress?: Hex
+  sourceWalletApp: Hex
+  destinationWalletApp: Hex
   guid: Hex
   payloadHash: Hex
   headerHash: Hex
+  message: Hex
+  sender: Hex
   nonce: bigint
+  src: string
+  dst: string
   srcEid: number
+  dstEid: number
+  sendTxHash: Hex
+  sendTimestamp: number
+  verifiedTxHash?: Hex
+  verifiedTimestamp?: number
+  deliveredTxHash?: Hex
+  deliveredTimestamp?: number
+  receivedTxHash?: Hex
+  receivedTimestamp?: number
   committed: boolean
   delivered: boolean
+  received: boolean
+}
+
+type ActivityLine = {
+  id: string
+  pending: boolean
+  timestamp?: number
+  title: string
+  detail: string
+}
+
+type PacketSentLog = {
+  args: { encodedPacket: Hex }
+  blockNumber: bigint
+  transactionHash: Hex
+}
+
+type PacketVerifiedLog = {
+  args: {
+    origin: { srcEid: number; sender: Hex; nonce: bigint }
+    receiver: Hex
+    payloadHash: Hex
+  }
+  blockNumber: bigint
+  transactionHash: Hex
+}
+
+type PacketDeliveredLog = {
+  args: {
+    origin: { srcEid: number; sender: Hex; nonce: bigint }
+    receiver: Hex
+  }
+  blockNumber: bigint
+  transactionHash: Hex
+}
+
+type ReceivedLog = {
+  args: { srcEid: number; nonce: bigint; sender: Hex; message: Hex }
+  blockNumber: bigint
+  transactionHash: Hex
 }
 
 type RecvMsg = { srcEid: number; nonce: string; sender: Hex; message: Hex }
+
+type AppRef = {
+  walletLabel: string
+  walletAddress: Hex
+  app: Hex
+}
+
+const LOG_CUTOFF_STORAGE_KEY = 'playground-log-cutoff'
 
 export default function App() {
   const [dep, setDep] = useState<Deployment | null>(null)
@@ -30,22 +103,42 @@ export default function App() {
   const [dst, setDst] = useState('b')
   const [payload, setPayload] = useState('hello omnichain')
   const [mode, setMode] = useState<'utf8' | 'hex'>('utf8')
-  const [flights, setFlights] = useState<Flight[]>([])
+  const [logCutoff, setLogCutoff] = useState<number>(() => readStoredLogCutoff())
+  const [pendingSends, setPendingSends] = useState<PendingSend[]>([])
+  const [transfers, setTransfers] = useState<Transfer[]>([])
+  const [workerEvents, setWorkerEvents] = useState<WorkerActivity[]>([])
   const [recv, setRecv] = useState<Record<string, RecvMsg[]>>({})
   const [err, setErr] = useState('')
-  const flightsRef = useRef<Flight[]>([])
-  flightsRef.current = flights
 
   useEffect(() => {
-    fetch('/deployment.json').then((r) => r.json()).then((d: Deployment) => {
-      setDep(d)
-      if (d.chains[1]) setDst(d.chains[1].key)
-    })
+    fetch('/deployment.json')
+      .then((r) => r.json())
+      .then((d: Deployment) => {
+        setDep(d)
+        if (d.chains[1]) setDst(d.chains[1].key)
+      })
   }, [])
 
   const chainByKey = useMemo(() => {
     const m: Record<string, ChainCfg> = {}
-    dep?.chains.forEach((c) => (m[c.key] = c))
+    dep?.chains.forEach((c) => { m[c.key] = c })
+    return m
+  }, [dep])
+
+  const chainByEid = useMemo(() => {
+    const m = new Map<number, ChainCfg>()
+    dep?.chains.forEach((c) => m.set(c.eid, c))
+    return m
+  }, [dep])
+
+  const appsByChainAndAddress = useMemo(() => {
+    const m = new Map<string, AppRef>()
+    dep?.wallets.forEach((wallet) => {
+      dep.chains.forEach((chain) => {
+        const app = wallet.apps[String(chain.eid)]
+        m.set(appRefKey(chain.key, app), { walletLabel: wallet.label, walletAddress: wallet.address, app })
+      })
+    })
     return m
   }, [dep])
 
@@ -53,86 +146,232 @@ export default function App() {
     setErr('')
     if (!dep) return
     if (src === dst) return setErr('source and destination must differ')
+
     const wallet = dep.wallets[walletIdx]
     const srcChain = chainByKey[src]
     const dstChain = chainByKey[dst]
-    const payloadHex: Hex = mode === 'hex' ? (isHex(payload) ? (payload as Hex) : (('0x' + payload) as Hex)) : stringToHex(payload)
+    const payloadHex: Hex = mode === 'hex'
+      ? (isHex(payload) ? payload as Hex : (`0x${payload}` as Hex))
+      : stringToHex(payload)
     if (mode === 'hex' && !isHex(payloadHex)) return setErr('invalid hex payload')
-    const srcApp = wallet.apps[String(srcChain.eid)]
+
     try {
       const wc = walletFor(srcChain, wallet.key)
-      const pub = publicFor(srcChain)
-      const hash = await wc.writeContract({ address: srcApp, abi: userAppAbi, functionName: 'sendMessage', args: [dstChain.eid, payloadHex], account: wc.account!, chain: wc.chain })
-      const rcpt = await pub.waitForTransactionReceipt({ hash })
-      // find PacketSent, decode
-      let flight: Flight | null = null
-      for (const log of rcpt.logs) {
-        try {
-          const ev = decodeEventLog({ abi: sendLibAbi, data: log.data, topics: log.topics })
-          if (ev.eventName === 'PacketSent') {
-            const p = decodePacket((ev.args as any).encodedPacket as Hex)
-            flight = {
-              id: p.guid, walletLabel: wallet.label, src, dst, guid: p.guid, payloadHash: p.payloadHash,
-              headerHash: p.headerHash, nonce: p.nonce, srcEid: srcChain.eid, committed: false, delivered: false,
-            }
-          }
-        } catch {
-          // not a PacketSent log
-        }
-      }
-      if (flight) setFlights((f) => [flight!, ...f].slice(0, 8))
+      const hash = await wc.writeContract({
+        address: wallet.apps[String(srcChain.eid)],
+        abi: userAppAbi,
+        functionName: 'sendMessage',
+        args: [dstChain.eid, payloadHex],
+        account: wc.account!,
+        chain: wc.chain,
+      })
+
+      setPendingSends((items) => [
+        {
+          id: String(hash),
+          txHash: hash,
+          submittedAt: Math.floor(Date.now() / 1000),
+          walletLabel: wallet.label,
+          walletAddress: wallet.address,
+          src,
+          dst,
+          payload: payloadHex,
+        },
+        ...items.filter((item) => item.txHash !== hash),
+      ].slice(0, 24))
     } catch (e: any) {
       setErr(e?.shortMessage || e?.message || String(e))
     }
   }
 
-  // Poll: receiver grid + in-flight pipeline
+  function clearLogs() {
+    const cutoff = Math.floor(Date.now() / 1000)
+    setLogCutoff(cutoff)
+    storeLogCutoff(cutoff)
+    setPendingSends([])
+    setTransfers([])
+    setWorkerEvents([])
+    setRecv({})
+  }
+
   useEffect(() => {
     if (!dep) return
     let alive = true
-    const tick = async () => {
-      const nextRecv: Record<string, RecvMsg[]> = {}
-      for (let wi = 0; wi < dep.wallets.length; wi++) {
-        for (const chain of dep.chains) {
-          const app = dep.wallets[wi].apps[String(chain.eid)]
-          try {
-            const logs = await publicFor(chain).getContractEvents({ address: app, abi: userAppAbi, eventName: 'Received', fromBlock: 0n, toBlock: 'latest' })
-            nextRecv[`${wi}:${chain.key}`] = logs.map((l: any) => ({ srcEid: Number(l.args.srcEid), nonce: String(l.args.nonce), sender: l.args.sender as Hex, message: l.args.message as Hex }))
-          } catch {
-            // chain not ready
-          }
-        }
-      }
-      if (alive) setRecv(nextRecv)
 
-      // pipeline
-      const fl = flightsRef.current
-      if (fl.some((f) => !f.delivered)) {
-        const updated = await Promise.all(fl.map(async (f) => {
-          if (f.delivered) return f
-          const dstChain = chainByKey[f.dst]
-          const pub = publicFor(dstChain)
-          let committed = f.committed
-          try {
-            committed = (await pub.readContract({ address: dstChain.receiveLib, abi: receiveLibAbi, functionName: 'committed', args: [f.headerHash, f.payloadHash] })) as boolean
-          } catch {}
-          // delivered = a Received event with matching srcEid+nonce on the dst wallet app
-          const key = `${walletIdxOf(dep, f.walletLabel)}:${f.dst}`
-          const delivered = (nextRecv[key] || []).some((m) => m.srcEid === f.srcEid && m.nonce === String(f.nonce))
-          return { ...f, committed: committed || f.committed, delivered }
-        }))
-        if (alive) setFlights(updated)
+    const tick = async () => {
+      const workerStatuses = await Promise.all((dep.workers || []).map(async (worker) => {
+        try {
+          const res = await fetch(worker.status, { cache: 'no-store' })
+          return await res.json() as WorkerStatus
+        } catch {
+          return { id: worker.id, role: worker.role, online: false, processed: 0, pathways: 0, events: [] } as WorkerStatus
+        }
+      }))
+      const nextWorkerEvents = workerStatuses
+        .flatMap((worker) => worker.events || [])
+        .filter((event) => passesLogCutoff(event.timestamp, logCutoff))
+        .sort((a, b) => a.timestamp - b.timestamp || a.seq - b.seq)
+
+      const chainEvents = await Promise.all(dep.chains.map(async (chain) => {
+        const pub = publicFor(chain)
+        try {
+          const [sent, verified, delivered] = await Promise.all([
+            pub.getContractEvents({ address: chain.sendLib, abi: sendLibAbi, eventName: 'PacketSent', fromBlock: 0n, toBlock: 'latest' }),
+            pub.getContractEvents({ address: chain.endpoint, abi: endpointAbi, eventName: 'PacketVerified', fromBlock: 0n, toBlock: 'latest' }),
+            pub.getContractEvents({ address: chain.endpoint, abi: endpointAbi, eventName: 'PacketDelivered', fromBlock: 0n, toBlock: 'latest' }),
+          ])
+          return {
+            chain,
+            sent: sent as unknown as PacketSentLog[],
+            verified: verified as unknown as PacketVerifiedLog[],
+            delivered: delivered as unknown as PacketDeliveredLog[],
+          }
+        } catch {
+          return { chain, sent: [] as PacketSentLog[], verified: [] as PacketVerifiedLog[], delivered: [] as PacketDeliveredLog[] }
+        }
+      }))
+
+      const recvEntries = await Promise.all(dep.wallets.flatMap((wallet, wi) => dep.chains.map(async (chain) => {
+        const app = wallet.apps[String(chain.eid)]
+        try {
+          const logs = await publicFor(chain).getContractEvents({ address: app, abi: userAppAbi, eventName: 'Received', fromBlock: 0n, toBlock: 'latest' })
+          return { key: `${wi}:${chain.key}`, app, chain, logs: logs as unknown as ReceivedLog[] }
+        } catch {
+          return { key: `${wi}:${chain.key}`, app, chain, logs: [] as ReceivedLog[] }
+        }
+      })))
+
+      const blocksByChain = new Map<string, Set<bigint>>()
+      const rememberBlock = (chainKey: string, blockNumber: bigint) => {
+        if (!blocksByChain.has(chainKey)) blocksByChain.set(chainKey, new Set())
+        blocksByChain.get(chainKey)!.add(blockNumber)
       }
+
+      chainEvents.forEach((entry) => {
+        entry.sent.forEach((log) => rememberBlock(entry.chain.key, log.blockNumber))
+        entry.verified.forEach((log) => rememberBlock(entry.chain.key, log.blockNumber))
+        entry.delivered.forEach((log) => rememberBlock(entry.chain.key, log.blockNumber))
+      })
+      recvEntries.forEach((entry) => entry.logs.forEach((log) => rememberBlock(entry.chain.key, log.blockNumber)))
+
+      const blockTimestamps = new Map<string, number>()
+      await Promise.all(dep.chains.map(async (chain) => {
+        const blocks = Array.from(blocksByChain.get(chain.key) || [])
+        await Promise.all(blocks.map(async (blockNumber) => {
+          try {
+            const block = await publicFor(chain).getBlock({ blockNumber })
+            blockTimestamps.set(blockTsKey(chain.key, blockNumber), Number(block.timestamp))
+          } catch {
+            blockTimestamps.set(blockTsKey(chain.key, blockNumber), 0)
+          }
+        }))
+      }))
+
+      const verifiedByKey = new Map<string, { txHash: Hex; timestamp: number }>()
+      const deliveredByKey = new Map<string, { txHash: Hex; timestamp: number }>()
+      const receivedByKey = new Map<string, { txHash: Hex; timestamp: number }>()
+
+      chainEvents.forEach((entry) => {
+        entry.verified.forEach((log) => {
+          const origin = log.args.origin
+          verifiedByKey.set(
+            verificationKey(origin.srcEid, origin.sender, log.args.receiver, origin.nonce, log.args.payloadHash),
+            { txHash: log.transactionHash, timestamp: blockTimestamps.get(blockTsKey(entry.chain.key, log.blockNumber)) || 0 },
+          )
+        })
+        entry.delivered.forEach((log) => {
+          const origin = log.args.origin
+          deliveredByKey.set(
+            requestKey(origin.srcEid, origin.sender, log.args.receiver, origin.nonce),
+            { txHash: log.transactionHash, timestamp: blockTimestamps.get(blockTsKey(entry.chain.key, log.blockNumber)) || 0 },
+          )
+        })
+      })
+
+      const nextRecv: Record<string, RecvMsg[]> = {}
+      recvEntries.forEach((entry) => {
+        const visibleLogs = entry.logs.filter((log) => passesLogCutoff(blockTimestamps.get(blockTsKey(entry.chain.key, log.blockNumber)) || 0, logCutoff))
+        nextRecv[entry.key] = visibleLogs.map((log) => ({
+          srcEid: Number(log.args.srcEid),
+          nonce: String(log.args.nonce),
+          sender: log.args.sender,
+          message: log.args.message,
+        }))
+        visibleLogs.forEach((log) => {
+          receivedByKey.set(
+            requestKey(Number(log.args.srcEid), log.args.sender, entry.app, log.args.nonce),
+            { txHash: log.transactionHash, timestamp: blockTimestamps.get(blockTsKey(entry.chain.key, log.blockNumber)) || 0 },
+          )
+        })
+      })
+
+      const nextTransfers: Transfer[] = []
+      chainEvents.forEach((entry) => {
+        entry.sent.forEach((log) => {
+          const packet = decodePacket(log.args.encodedPacket)
+          const dstChain = chainByEid.get(packet.dstEid)
+          if (!dstChain) return
+          const sendTimestamp = blockTimestamps.get(blockTsKey(entry.chain.key, log.blockNumber)) || 0
+          if (!passesLogCutoff(sendTimestamp, logCutoff)) return
+
+          const srcWalletApp = bytes32ToAddress(packet.sender)
+          const dstWalletApp = bytes32ToAddress(packet.receiver)
+          const appRef = appsByChainAndAddress.get(appRefKey(entry.chain.key, srcWalletApp))
+          const verified = verifiedByKey.get(verificationKey(packet.srcEid, packet.sender, dstWalletApp, packet.nonce, packet.payloadHash))
+          const delivered = deliveredByKey.get(requestKey(packet.srcEid, packet.sender, dstWalletApp, packet.nonce))
+          const received = receivedByKey.get(requestKey(packet.srcEid, packet.sender, dstWalletApp, packet.nonce))
+
+          nextTransfers.push({
+            id: packet.guid,
+            walletLabel: appRef?.walletLabel || shortHex(srcWalletApp),
+            walletAddress: appRef?.walletAddress,
+            sourceWalletApp: srcWalletApp,
+            destinationWalletApp: dstWalletApp,
+            guid: packet.guid,
+            payloadHash: packet.payloadHash,
+            headerHash: packet.headerHash,
+            message: packet.message,
+            sender: packet.sender,
+            nonce: packet.nonce,
+            src: entry.chain.key,
+            dst: dstChain.key,
+            srcEid: packet.srcEid,
+            dstEid: packet.dstEid,
+            sendTxHash: log.transactionHash,
+            sendTimestamp,
+            verifiedTxHash: verified?.txHash,
+            verifiedTimestamp: verified?.timestamp,
+            deliveredTxHash: delivered?.txHash,
+            deliveredTimestamp: delivered?.timestamp,
+            receivedTxHash: received?.txHash,
+            receivedTimestamp: received?.timestamp,
+            committed: !!verified,
+            delivered: !!delivered,
+            received: !!received,
+          })
+        })
+      })
+
+      nextTransfers.sort((a, b) => b.sendTimestamp - a.sendTimestamp || Number(b.nonce - a.nonce))
+
+      if (!alive) return
+      setWorkerEvents(nextWorkerEvents)
+      setRecv(nextRecv)
+      setTransfers(nextTransfers)
+      setPendingSends((items) => items.filter((item) => passesLogCutoff(item.submittedAt, logCutoff) && !nextTransfers.some((transfer) => sameHex(transfer.sendTxHash, item.txHash))))
     }
-    const id = setInterval(tick, 1500)
+
+    const id = setInterval(tick, 2000)
     tick()
     return () => {
       alive = false
       clearInterval(id)
     }
-  }, [dep, chainByKey])
+  }, [appsByChainAndAddress, chainByEid, dep, logCutoff])
 
-  if (!dep) return <div className="app"><h1>Loading deployment…</h1><div className="sub">Run <code>pnpm playground</code> first.</div></div>
+  if (!dep) {
+    return <div className="app"><h1>Loading deployment…</h1><div className="sub">Run <code>pnpm playground</code> first.</div></div>
+  }
 
   return (
     <div className="app">
@@ -166,8 +405,8 @@ export default function App() {
           <div className="field">
             <label>Payload type</label>
             <div className="toggle">
-              <button className={mode === 'utf8' ? 'on' : ''} onClick={() => setMode('utf8')}>utf8</button>
-              <button className={mode === 'hex' ? 'on' : ''} onClick={() => setMode('hex')}>hex</button>
+              <button type="button" className={mode === 'utf8' ? 'on' : ''} onClick={() => setMode('utf8')}>utf8</button>
+              <button type="button" className={mode === 'hex' ? 'on' : ''} onClick={() => setMode('hex')}>hex</button>
             </div>
           </div>
         </div>
@@ -176,18 +415,73 @@ export default function App() {
           <textarea value={payload} onChange={(e) => setPayload(e.target.value)} placeholder={mode === 'hex' ? '0x…' : 'type a message'} />
         </div>
         <div className="row" style={{ marginTop: 10 }}>
-          <button onClick={send} disabled={src === dst}>Commit &amp; transfer →</button>
+          <button type="button" className="send-btn" onClick={send} disabled={src === dst}>Commit &amp; transfer →</button>
           {err && <span style={{ color: 'var(--red)', fontSize: 12 }}>{err}</span>}
         </div>
 
-        {flights.map((f) => (
-          <div className="flight" key={f.id}>
-            <div><b>{f.walletLabel}</b> {f.src.toUpperCase()} → {f.dst.toUpperCase()} · nonce {String(f.nonce)}</div>
-            <div className="mono">guid {f.guid.slice(0, 18)}…</div>
+        {transfers.slice(0, 8).map((transfer) => (
+          <div className="flight" key={transfer.id}>
+            <div><b>{transfer.walletLabel}</b> {transfer.src.toUpperCase()} → {transfer.dst.toUpperCase()} · nonce {String(transfer.nonce)}</div>
+            <div className="mono">guid {shortHex(transfer.guid, 18)} · tx {shortHex(transfer.sendTxHash)}</div>
             <div className="stages">
               <span className="stage done">Sent</span>
-              <span className={`stage ${f.committed ? 'done' : ''}`}>Verified &amp; Committed</span>
-              <span className={`stage ${f.delivered ? 'done' : ''}`}>Delivered</span>
+              <span className={`stage ${transfer.committed ? 'done' : ''}`}>Verified &amp; Committed</span>
+              <span className={`stage ${transfer.delivered ? 'done' : ''}`}>Delivered</span>
+              <span className={`stage ${transfer.received ? 'done' : ''}`}>Received</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2>Activities / Log</h2>
+          <button type="button" className="clear-btn" onClick={clearLogs} disabled={!hasVisibleLogs(pendingSends, transfers, workerEvents, recv)}>Clear</button>
+        </div>
+        <div className="sub">Detailed journey with exact contracts, methods, tx hashes, worker actions, and destination receive.</div>
+
+        {pendingSends.length === 0 && transfers.length === 0 && <div className="empty">no transfer activity yet</div>}
+
+        {pendingSends.map((pending) => (
+          <div className="activity-card" key={pending.id}>
+            <div className="activity-head">
+              <div><b>{pending.walletLabel}</b> {pending.src.toUpperCase()} → {pending.dst.toUpperCase()}</div>
+              <span className="pill">pending</span>
+            </div>
+            <div className="activity-list">
+              {buildPendingActivities(pending).map((item) => (
+                <div className="activity-item" key={item.id}>
+                  <div className={`activity-dot ${item.pending ? 'pending' : 'done'}`} />
+                  <div className="activity-content">
+                    <div className="activity-title">{item.title}</div>
+                    <div className="activity-meta">{formatTimestamp(item.timestamp)} · {item.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {transfers.map((transfer) => (
+          <div className="activity-card" key={transfer.id}>
+            <div className="activity-head">
+              <div><b>{transfer.walletLabel}</b> {transfer.src.toUpperCase()} → {transfer.dst.toUpperCase()} · nonce {String(transfer.nonce)}</div>
+              <div className="row-inline">
+                <span className="pill">{transfer.committed ? 'committed' : 'in-flight'}</span>
+                <span className="pill">{transfer.received ? 'received' : transfer.delivered ? 'delivered' : 'routing'}</span>
+              </div>
+            </div>
+            <div className="mono">guid {transfer.guid} · header {shortHex(transfer.headerHash)} · payload {describePayload(transfer.message)}</div>
+            <div className="activity-list">
+              {buildTransferActivities(transfer, workerEvents).map((item) => (
+                <div className="activity-item" key={item.id}>
+                  <div className={`activity-dot ${item.pending ? 'pending' : 'done'}`} />
+                  <div className="activity-content">
+                    <div className="activity-title">{item.title}</div>
+                    <div className="activity-meta">{formatTimestamp(item.timestamp)} · {item.detail}</div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}
@@ -222,9 +516,166 @@ export default function App() {
   )
 }
 
-function walletIdxOf(dep: Deployment, label: string): number {
-  return dep.wallets.findIndex((w) => w.label === label)
+function buildPendingActivities(pending: PendingSend): ActivityLine[] {
+  return [
+    {
+      id: `${pending.id}:request`,
+      pending: false,
+      timestamp: pending.submittedAt,
+      title: `${pending.walletLabel} requested transfer ${pending.src.toUpperCase()} → ${pending.dst.toUpperCase()}`,
+      detail: `UI action · wallet ${shortHex(pending.walletAddress)} · payload ${describePayload(pending.payload)}`,
+    },
+    {
+      id: `${pending.id}:submitted`,
+      pending: true,
+      timestamp: pending.submittedAt,
+      title: `Contract UserApp on ${pending.src.toUpperCase()} · sendMessage() submitted`,
+      detail: `tx ${shortHex(pending.txHash)} · waiting for source-chain receipt`,
+    },
+  ]
 }
+
+function buildTransferActivities(transfer: Transfer, workerEvents: WorkerActivity[]): ActivityLine[] {
+  const base: ActivityLine[] = [
+    {
+      id: `${transfer.id}:request`,
+      pending: false,
+      timestamp: transfer.sendTimestamp,
+      title: `${transfer.walletLabel} requested transfer ${transfer.src.toUpperCase()} → ${transfer.dst.toUpperCase()}`,
+      detail: `UI action · wallet ${transfer.walletAddress ? shortHex(transfer.walletAddress) : 'unknown'} · app ${shortHex(transfer.sourceWalletApp)}`,
+    },
+    {
+      id: `${transfer.id}:send`,
+      pending: false,
+      timestamp: transfer.sendTimestamp,
+      title: `Contract UserApp on ${transfer.src.toUpperCase()} · sendMessage() mined`,
+      detail: `tx ${shortHex(transfer.sendTxHash)} · source app ${shortHex(transfer.sourceWalletApp)}`,
+    },
+    {
+      id: `${transfer.id}:packet`,
+      pending: false,
+      timestamp: transfer.sendTimestamp,
+      title: `Contract SendLib on ${transfer.src.toUpperCase()} · PacketSent`,
+      detail: `guid ${shortHex(transfer.guid)} · payload hash ${shortHex(transfer.payloadHash)} · dst app ${shortHex(transfer.destinationWalletApp)}`,
+    },
+    {
+      id: `${transfer.id}:verified`,
+      pending: !transfer.committed,
+      timestamp: transfer.verifiedTimestamp,
+      title: `Contract Endpoint on ${transfer.dst.toUpperCase()} · verify() / PacketVerified`,
+      detail: transfer.committed
+        ? `tx ${shortHex(transfer.verifiedTxHash)} · payload committed for nonce ${String(transfer.nonce)}`
+        : `awaiting DVN threshold and destination commit`,
+    },
+    {
+      id: `${transfer.id}:delivered`,
+      pending: !transfer.delivered,
+      timestamp: transfer.deliveredTimestamp,
+      title: `Contract Endpoint on ${transfer.dst.toUpperCase()} · lzReceive() / PacketDelivered`,
+      detail: transfer.delivered
+        ? `tx ${shortHex(transfer.deliveredTxHash)} · receiver ${shortHex(transfer.destinationWalletApp)}`
+        : `awaiting executor delivery`,
+    },
+    {
+      id: `${transfer.id}:received`,
+      pending: !transfer.received,
+      timestamp: transfer.receivedTimestamp,
+      title: `Contract UserApp on ${transfer.dst.toUpperCase()} · Received`,
+      detail: transfer.received
+        ? `tx ${shortHex(transfer.receivedTxHash)} · payload ${describePayload(transfer.message)}`
+        : `awaiting destination app receive`,
+    },
+  ]
+
+  const workerLines = workerEvents
+    .filter((event) => sameHex(event.guid, transfer.guid))
+    .map((event) => workerEventLine(event))
+
+  return [...base, ...workerLines].sort((a, b) => {
+    const aTs = a.timestamp ?? Number.MAX_SAFE_INTEGER
+    const bTs = b.timestamp ?? Number.MAX_SAFE_INTEGER
+    return aTs - bTs || a.id.localeCompare(b.id)
+  })
+}
+
+function workerEventLine(event: WorkerActivity): ActivityLine {
+  const contractMethod = event.contract && event.method
+    ? `${event.contract}.${event.method}`
+    : event.contract || event.method || event.action
+  const pathway = event.pathway ? `path ${event.pathway}` : 'path ?'
+  const tx = event.txHash ? ` · tx ${shortHex(event.txHash as Hex)}` : ''
+  const contractAddr = event.contractAddress ? ` · ${shortHex(event.contractAddress as Hex)}` : ''
+  const payload = event.payloadHash ? ` · payload ${shortHex(event.payloadHash as Hex)}` : ''
+  const detail = [
+    `${event.workerId} (${event.role})`,
+    pathway,
+    event.detail || `${event.status} ${contractMethod}`,
+    `${contractMethod}${contractAddr}${tx}${payload}`,
+    event.error ? `error: ${event.error}` : '',
+  ].filter(Boolean).join(' · ')
+
+  return {
+    id: `worker:${event.workerId}:${event.seq}`,
+    pending: event.status !== 'confirmed' && event.status !== 'observed' && event.status !== 'queued' && event.status !== 'submitted',
+    timestamp: event.timestamp,
+    title: `Worker ${event.workerId} · ${contractMethod}`,
+    detail,
+  }
+}
+
+function appRefKey(chainKey: string, app: Hex): string {
+  return `${chainKey}:${app.toLowerCase()}`
+}
+
+function blockTsKey(chainKey: string, blockNumber: bigint): string {
+  return `${chainKey}:${blockNumber}`
+}
+
+function bytes32ToAddress(value: Hex): Hex {
+  return getAddress(`0x${value.slice(-40)}`) as Hex
+}
+
+function requestKey(srcEid: number, sender: Hex, receiver: Hex, nonce: bigint): string {
+  return `${srcEid}:${sender.toLowerCase()}:${receiver.toLowerCase()}:${String(nonce)}`
+}
+
+function verificationKey(srcEid: number, sender: Hex, receiver: Hex, nonce: bigint, payloadHash: Hex): string {
+  return `${requestKey(srcEid, sender, receiver, nonce)}:${payloadHash.toLowerCase()}`
+}
+
+function sameHex(a?: Hex | string, b?: Hex | string): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase()
+}
+
+function passesLogCutoff(timestamp: number, cutoff: number): boolean {
+  return cutoff === 0 || timestamp >= cutoff
+}
+
+function hasVisibleLogs(
+  pendingSends: PendingSend[],
+  transfers: Transfer[],
+  workerEvents: WorkerActivity[],
+  recv: Record<string, RecvMsg[]>,
+): boolean {
+  return pendingSends.length > 0 || transfers.length > 0 || workerEvents.length > 0 || Object.values(recv).some((msgs) => msgs.length > 0)
+}
+
+function shortHex(value?: Hex | string, width = 12): string {
+  if (!value) return '—'
+  const v = String(value)
+  return v.length <= width + 6 ? v : `${v.slice(0, width)}…${v.slice(-6)}`
+}
+
+function formatTimestamp(ts?: number): string {
+  if (!ts) return 'pending'
+  return new Date(ts * 1000).toLocaleTimeString()
+}
+
+function describePayload(hex: Hex): string {
+  const decoded = tryUtf8(hex)
+  return decoded === hex ? shortHex(hex, 18) : decoded
+}
+
 function tryUtf8(hex: Hex): string {
   try {
     const s = hexToString(hex)
@@ -232,5 +683,14 @@ function tryUtf8(hex: Hex): string {
   } catch {}
   return hex
 }
-// keep pad import referenced (used implicitly by viem types in some builds)
-void pad
+
+function readStoredLogCutoff(): number {
+  if (typeof window === 'undefined') return 0
+  const raw = Number(window.localStorage.getItem(LOG_CUTOFF_STORAGE_KEY) || '0')
+  return Number.isFinite(raw) && raw > 0 ? raw : 0
+}
+
+function storeLogCutoff(cutoff: number) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(LOG_CUTOFF_STORAGE_KEY, String(cutoff))
+}

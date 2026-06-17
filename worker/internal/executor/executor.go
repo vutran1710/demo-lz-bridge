@@ -83,6 +83,7 @@ type runner struct {
 
 	mu      sync.Mutex
 	running map[string]bool
+	seen    map[string]bool
 }
 
 func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway, rep *status.Reporter) (*runner, error) {
@@ -99,7 +100,7 @@ func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway, rep *statu
 	r := &runner{
 		id: e.cfg.ID + ":" + pw.ID, clients: clients, reader: reader, sched: NewScheduler(),
 		signers: map[string]*signer.Signer{}, receiveLib: receiveLib, endpoint: endpoint,
-		confirmations: pw.Confirmations, dstEid: pw.DstEid, pollMs: e.cfg.PollMs, running: map[string]bool{}, reporter: rep,
+		confirmations: pw.Confirmations, dstEid: pw.DstEid, pollMs: e.cfg.PollMs, running: map[string]bool{}, seen: map[string]bool{}, reporter: rep,
 	}
 	ids := []string{}
 	for i, k := range e.cfg.Keys {
@@ -149,9 +150,45 @@ func (r *runner) watch(ctx context.Context) {
 				if r.dstEid != 0 && p.DstEid != r.dstEid {
 					continue // bound for a different destination; another pathway handles it
 				}
-				r.sched.Add(channelKey(p), Item{
+				guid := p.Guid.Hex()
+				if !r.seen[guid] {
+					r.seen[guid] = true
+					r.reporter.Event(status.Event{
+						Pathway:         pathwayID(r.id),
+						Action:          "observe-packet",
+						Status:          "observed",
+						Contract:        "SendLib",
+						Method:          "PacketSent",
+						Guid:            guid,
+						Nonce:           p.Nonce,
+						SrcEid:          p.SrcEid,
+						DstEid:          p.DstEid,
+						Sender:          common.BytesToAddress(p.Sender[12:]).Hex(),
+						Receiver:        p.Receiver.Hex(),
+						PayloadHash:     p.PayloadHash.Hex(),
+						Detail:          "source PacketSent observed by executor",
+					})
+				}
+				added := r.sched.Add(channelKey(p), Item{
 					Header: p.Header, Guid: p.Guid, Message: p.Message, PayloadHash: p.PayloadHash, Nonce: p.Nonce,
 				})
+				if added {
+					r.reporter.Event(status.Event{
+						Pathway:         pathwayID(r.id),
+						Action:          "queue-delivery",
+						Status:          "queued",
+						Contract:        "Executor",
+						Method:          "schedule",
+						Guid:            guid,
+						Nonce:           p.Nonce,
+						SrcEid:          p.SrcEid,
+						DstEid:          p.DstEid,
+						Sender:          common.BytesToAddress(p.Sender[12:]).Hex(),
+						Receiver:        p.Receiver.Hex(),
+						PayloadHash:     p.PayloadHash.Hex(),
+						Detail:          "executor queued packet for ordered delivery",
+					})
+				}
 			}
 			last = safe
 		}
@@ -208,6 +245,8 @@ func (r *runner) worker(ctx context.Context, channel string) {
 // deliver advances one message: commit (if needed, gap-free) then execute. Returns errRetry until done.
 func (r *runner) deliver(ctx context.Context, sgn *signer.Signer, channel string, it Item) error {
 	headerHash := crypto.Keccak256Hash(it.Header)
+	srcEid, sender := decodeChannel(channel)
+	receiver := channelReceiver(channel)
 	committed, err := r.reader.Committed(ctx, headerHash, it.PayloadHash)
 	if err != nil {
 		return err
@@ -217,25 +256,141 @@ func (r *runner) deliver(ctx context.Context, sgn *signer.Signer, channel string
 		if err != nil || !v {
 			return errRetry
 		}
-		if err := sgn.Commit(ctx, r.receiveLib, it.Header, common.Hash(it.PayloadHash)); err != nil {
+		r.reporter.Event(status.Event{
+			Pathway:         pathwayID(r.id),
+			Action:          "commit-ready",
+			Status:          "ready",
+			Contract:        "ReceiveLib",
+			ContractAddress: r.receiveLib.Hex(),
+			Method:          "commitVerification",
+			Guid:            common.Hash(it.Guid).Hex(),
+			Nonce:           it.Nonce,
+			SrcEid:          srcEid,
+			DstEid:          r.dstEid,
+			Sender:          common.BytesToAddress(sender[12:]).Hex(),
+			Receiver:        receiver.Hex(),
+			PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+			Detail:          "attestor threshold met; executor can commit",
+		})
+		txHash, err := sgn.Commit(ctx, r.receiveLib, it.Header, common.Hash(it.PayloadHash))
+		if err != nil {
+			r.reporter.Event(status.Event{
+				Pathway:         pathwayID(r.id),
+				Action:          "submit-commit",
+				Status:          "failed",
+				Contract:        "ReceiveLib",
+				ContractAddress: r.receiveLib.Hex(),
+				Method:          "commitVerification",
+				Guid:            common.Hash(it.Guid).Hex(),
+				Nonce:           it.Nonce,
+				SrcEid:          srcEid,
+				DstEid:          r.dstEid,
+				Sender:          common.BytesToAddress(sender[12:]).Hex(),
+				Receiver:        receiver.Hex(),
+				PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+				Error:           err.Error(),
+				Detail:          "executor commit submission failed",
+			})
 			return errRetry
 		}
+		r.reporter.Event(status.Event{
+			Pathway:         pathwayID(r.id),
+			Action:          "submit-commit",
+			Status:          "submitted",
+			Contract:        "ReceiveLib",
+			ContractAddress: r.receiveLib.Hex(),
+			Method:          "commitVerification",
+			TxHash:          txHash.Hex(),
+			Guid:            common.Hash(it.Guid).Hex(),
+			Nonce:           it.Nonce,
+			SrcEid:          srcEid,
+			DstEid:          r.dstEid,
+			Sender:          common.BytesToAddress(sender[12:]).Hex(),
+			Receiver:        receiver.Hex(),
+			PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+			Detail:          "executor submitted ReceiveLib.commitVerification",
+		})
 		if !poll(ctx, func() bool { c, _ := r.reader.Committed(ctx, headerHash, it.PayloadHash); return c }) {
 			return errRetry
 		}
+		r.reporter.Event(status.Event{
+			Pathway:         pathwayID(r.id),
+			Action:          "commit-observed",
+			Status:          "confirmed",
+			Contract:        "Endpoint",
+			ContractAddress: r.endpoint.Hex(),
+			Method:          "verify",
+			Guid:            common.Hash(it.Guid).Hex(),
+			Nonce:           it.Nonce,
+			SrcEid:          srcEid,
+			DstEid:          r.dstEid,
+			Sender:          common.BytesToAddress(sender[12:]).Hex(),
+			Receiver:        receiver.Hex(),
+			PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+			Detail:          "destination endpoint marked packet verified",
+		})
 	}
-	srcEid, sender := decodeChannel(channel)
 	o := signer.Origin{SrcEid: srcEid, Sender: sender, Nonce: it.Nonce}
-	receiver := channelReceiver(channel)
-	if err := sgn.Execute(ctx, r.endpoint, o, receiver, common.Hash(it.Guid), it.Message); err != nil {
+	txHash, err := sgn.Execute(ctx, r.endpoint, o, receiver, common.Hash(it.Guid), it.Message)
+	if err != nil {
+		r.reporter.Event(status.Event{
+			Pathway:         pathwayID(r.id),
+			Action:          "submit-execute",
+			Status:          "failed",
+			Contract:        "Endpoint",
+			ContractAddress: r.endpoint.Hex(),
+			Method:          "lzReceive",
+			Guid:            common.Hash(it.Guid).Hex(),
+			Nonce:           it.Nonce,
+			SrcEid:          srcEid,
+			DstEid:          r.dstEid,
+			Sender:          common.BytesToAddress(sender[12:]).Hex(),
+			Receiver:        receiver.Hex(),
+			PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+			Error:           err.Error(),
+			Detail:          "executor delivery submission failed",
+		})
 		return errRetry
 	}
+	r.reporter.Event(status.Event{
+		Pathway:         pathwayID(r.id),
+		Action:          "submit-execute",
+		Status:          "submitted",
+		Contract:        "Endpoint",
+		ContractAddress: r.endpoint.Hex(),
+		Method:          "lzReceive",
+		TxHash:          txHash.Hex(),
+		Guid:            common.Hash(it.Guid).Hex(),
+		Nonce:           it.Nonce,
+		SrcEid:          srcEid,
+		DstEid:          r.dstEid,
+		Sender:          common.BytesToAddress(sender[12:]).Hex(),
+		Receiver:        receiver.Hex(),
+		PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+		Detail:          "executor submitted Endpoint.lzReceive",
+	})
 	if !poll(ctx, func() bool {
 		d, _ := r.reader.Delivered(ctx, receiver, srcEid, sender, it.Nonce, common.Hash(it.PayloadHash))
 		return d
 	}) {
 		return errRetry
 	}
+	r.reporter.Event(status.Event{
+		Pathway:         pathwayID(r.id),
+		Action:          "delivery-observed",
+		Status:          "confirmed",
+		Contract:        "Endpoint",
+		ContractAddress: r.endpoint.Hex(),
+		Method:          "PacketDelivered",
+		Guid:            common.Hash(it.Guid).Hex(),
+		Nonce:           it.Nonce,
+		SrcEid:          srcEid,
+		DstEid:          r.dstEid,
+		Sender:          common.BytesToAddress(sender[12:]).Hex(),
+		Receiver:        receiver.Hex(),
+		PayloadHash:     common.Hash(it.PayloadHash).Hex(),
+		Detail:          "destination endpoint emitted PacketDelivered",
+	})
 	return nil
 }
 
@@ -266,6 +421,13 @@ func decodeChannel(channel string) (uint32, [32]byte) {
 func channelReceiver(channel string) common.Address {
 	parts := strings.SplitN(channel, "|", 3)
 	return common.HexToAddress(parts[2])
+}
+
+func pathwayID(id string) string {
+	if i := strings.IndexByte(id, ':'); i >= 0 && i+1 < len(id) {
+		return id[i+1:]
+	}
+	return id
 }
 
 func envOr(k, d string) string {

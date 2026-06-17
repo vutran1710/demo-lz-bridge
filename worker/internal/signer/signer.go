@@ -84,13 +84,13 @@ func (s *Signer) SetNonce(n uint64) {
 	s.nonce = n
 }
 
-func (s *Signer) transact(ctx context.Context, to common.Address, method string, args ...interface{}) error {
+func (s *Signer) transact(ctx context.Context, to common.Address, method string, args ...interface{}) (common.Hash, error) {
 	c := bind.NewBoundContract(to, s.parsed, s.client, s.client, s.client)
 	opts := *s.auth
 	opts.Context = ctx
 	n := s.reserveNonce()
 	opts.Nonce = new(big.Int).SetUint64(n)
-	_, err := c.Transact(&opts, method, args...)
+	tx, err := c.Transact(&opts, method, args...)
 	if err != nil {
 		// roll the counter back so the reserved nonce is reused (the tx was never sent)
 		s.mu.Lock()
@@ -98,16 +98,17 @@ func (s *Signer) transact(ctx context.Context, to common.Address, method string,
 			s.nonce = n
 		}
 		s.mu.Unlock()
+		return common.Hash{}, err
 	}
-	return err
+	return tx.Hash(), nil
 }
 
 // Commit calls ReceiveLib.commitVerification.
-func (s *Signer) Commit(ctx context.Context, receiveLib common.Address, header []byte, payloadHash common.Hash) error {
+func (s *Signer) Commit(ctx context.Context, receiveLib common.Address, header []byte, payloadHash common.Hash) (common.Hash, error) {
 	return s.transact(ctx, receiveLib, "commitVerification", header, [32]byte(payloadHash))
 }
 
 // Execute calls Endpoint.lzReceive (delivery).
-func (s *Signer) Execute(ctx context.Context, endpoint common.Address, o Origin, receiver common.Address, guid common.Hash, message []byte) error {
+func (s *Signer) Execute(ctx context.Context, endpoint common.Address, o Origin, receiver common.Address, guid common.Hash, message []byte) (common.Hash, error) {
 	return s.transact(ctx, endpoint, "lzReceive", o, receiver, [32]byte(guid), message, []byte{})
 }
