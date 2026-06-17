@@ -16,4 +16,5 @@ export const ABI = {
   PriceFeed: artifact('PriceFeed.sol/PriceFeed.json'),
   AppEcho: artifact('AppEcho.sol/AppEcho.json'),
   AppRevert: artifact('AppRevert.sol/AppRevert.json'),
+  RelayApp: artifact('RelayApp.sol/RelayApp.json'),
 }
