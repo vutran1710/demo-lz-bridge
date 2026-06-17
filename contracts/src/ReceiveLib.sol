@@ -55,6 +55,16 @@ contract ReceiveLib is IReceiveLib {
         return _uln[oapp][srcEid];
     }
 
+    /// @notice True when the M-of-N threshold is met but the message is not yet committed.
+    /// Lets the Executor poll readiness instead of blind-submitting commitVerification.
+    function verifiable(bytes calldata packetHeader, bytes32 payloadHash) external view returns (bool) {
+        (Origin memory o, bytes32 receiver32,) = PacketCodec.decodeHeader(packetHeader);
+        bytes32 headerHash = keccak256(packetHeader);
+        if (committed[headerHash][payloadHash]) return false;
+        address receiver = address(uint160(uint256(receiver32)));
+        return _thresholdMet(headerHash, payloadHash, _uln[receiver][o.srcEid]);
+    }
+
     function _isVerifier(UlnConfig memory c, address who) internal pure returns (bool) {
         for (uint256 i = 0; i < c.requiredAttestors.length; i++) {
             if (c.requiredAttestors[i] == who) return true;

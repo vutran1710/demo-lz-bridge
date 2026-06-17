@@ -18,7 +18,7 @@ contract UlnTest is Test {
     address stranger = address(0xDEAD);
 
     function setUp() public {
-        endpoint = new Endpoint(2);
+        endpoint = new Endpoint(2, address(0));
         lib = new ReceiveLib(address(endpoint));
         // wire receiveLib + 2-of-3 ULN config for receiver <- SRC
         endpoint.setReceiveLibrary(receiver, SRC, address(lib), 0);
@@ -64,6 +64,20 @@ contract UlnTest is Test {
         lib.verify(h, ph, 1);
         vm.expectRevert(ReceiveLib.ThresholdNotMet.selector);
         lib.commitVerification(h, ph);
+    }
+
+    function test_verifiable_falseUntilThreshold_thenTrue() public {
+        bytes memory h = _header(1);
+        bytes32 ph = keccak256("p");
+        assertFalse(lib.verifiable(h, ph));
+        vm.prank(a1);
+        lib.verify(h, ph, 1);
+        assertFalse(lib.verifiable(h, ph)); // 1 of 2
+        vm.prank(a2);
+        lib.verify(h, ph, 1);
+        assertTrue(lib.verifiable(h, ph)); // threshold met, not committed
+        lib.commitVerification(h, ph);
+        assertFalse(lib.verifiable(h, ph)); // committed → no longer pending
     }
 
     function test_exact_threshold_commits_and_double_commit_reverts() public {

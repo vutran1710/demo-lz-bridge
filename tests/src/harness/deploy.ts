@@ -7,6 +7,7 @@ export type Ctx = {
   endpoint: Hex
   sendLib: Hex
   receiveLib: Hex
+  executorConfig: Hex
   pub: PublicClient
   wallets: WalletClient[]
   abi: typeof ABI
@@ -24,8 +25,9 @@ export async function deployStack(
     const r = await pub.waitForTransactionReceipt({ hash })
     return r.contractAddress as Hex
   }
-  const endpoint = await deploy(ABI.Endpoint, [eid])
+  const executorConfig = await deploy(ABI.ExecutorConfig, [])
+  const endpoint = await deploy(ABI.Endpoint, [eid, executorConfig])
   const sendLib = await deploy(ABI.SendLib, [endpoint])
   const receiveLib = await deploy(ABI.ReceiveLib, [endpoint])
-  return { rpc, eid, endpoint, sendLib, receiveLib, pub, wallets, abi: ABI }
+  return { rpc, eid, endpoint, sendLib, receiveLib, executorConfig, pub, wallets, abi: ABI }
 }
