@@ -33,7 +33,7 @@ Build a **generic cross-chain message-passing protocol** between **two internal,
 
 **Open questions** (do not block architecture; resolve before/within subsystem specs):
 - **OQ1 — Fee/gas model:** who funds destination execution gas? Options: operator-funded executor (no on-chain fee), or sender prepays native fee at `send()` (LZ-faithful). *Leaning operator-funded for an internal network; confirm.*
-- **OQ2 — Off-chain stack:** language/runtime for attestor + executor workers (Go / TS / Rust).
+- ~~OQ2 — Stack~~ **(resolved):** attestor + executor workers in **Go** (go-ethereum tooling); protocol-core contracts in **Foundry** (Solidity, build/deploy only — no forge unit tests); **all tests are integration-level in TypeScript + Vitest + viem** against local nodes (§9).
 - **OQ3 — Ordered semantics precision:** does a parked (failed-execution) message block later nonces on the same channel, or may later nonces execute? See §7 for the proposed rule.
 - **OQ4 — Key management:** attestor signing keys (HSM / KMS / threshold-sig).
 
@@ -297,23 +297,22 @@ Per (OApp, remote EID): send library, receive library, `UlnConfig` (attestor set
 
 ## 9. Testing strategy
 
-Three named suites are first-class deliverables, in addition to per-component unit tests.
+**Decided:** **No unit tests** (treated as implementation detail). Testing is **black-box integration** only, written in **TypeScript + Vitest**, driving deployed contracts (via viem) and real worker processes against local EVM node(s). All suites are written **red before any component logic** (test-suites-first discipline). Components are exercised only through their public surface: contract ABIs, emitted events, and worker process behavior.
 
-**Unit (per component, foundational):**
-- Contracts (Foundry): codec round-trip & fuzz (§4 byte layout), nonce monotonicity, payload-hash check, replay rejection, M-of-N threshold edge cases, peer auth, escape hatches.
-- Attestor worker: finality wait, payloadHash recomputation, crash/replay idempotency.
+Phase-1 note: because `Endpoint.lzReceive` is permissionless, the **TS harness acts as the executor** (calls `lzReceive` itself), so the full send→verify→commit→execute lifecycle is testable before the production executor worker (subsystem 3) exists.
 
-**Integration suite:**
-- On-chain path: full send→verify→commit happy path (subsystems 1+2); reverting/under-threshold stall; out-of-order commit rejection; double-commit rejection.
-- Worker↔contract: attestor observing real `PacketSent` on a local node and driving `ReceiveLib.verify`/`commitVerification`; partial-attestor-set liveness (M-1 healthy ⇒ stall, M healthy ⇒ commit).
+**Integration suite (TS/Vitest):**
+- Deploy the full contract set to a local node; wire config (libs, M-of-N attestor set, peers).
+- Full send→verify→commit→execute happy path; reverting receiver → park → retry → success; under-threshold stall; out-of-order commit rejection; double-commit rejection; replay rejection; peer-auth rejection; mutated-message-vs-committed-hash rejection.
+- Attestor worker (subsystem 2) observing real `PacketSent` and driving `verify`/`commitVerification`; partial-attestor-set liveness (M-1 healthy ⇒ stall, M healthy ⇒ commit); attestor crash/restart idempotency.
 
-**Stress suite:**
-- High packet throughput across a channel (sustained + burst); attestor catch-up after lag; many concurrent channels; large messages; nonce-gap pressure; worker restart under load; measure commit latency and resource use; assert no gaps / no double-commit / no lost packets under load.
+**Stress suite (TS/Vitest):**
+- Sustained + burst packet throughput on one channel; many concurrent channels; large messages; nonce-gap pressure; attestor catch-up after induced lag; worker restart under load. Assert no gaps / no double-commit / no lost packets; record commit latency.
 
-**E2E suite:**
-- Two local EVM nodes + N attestors (+ executor stub once subsystem 3 lands) + an arbitrary-data app and a stub asset app. Full lifecycle; chaos (drop/restart a worker, revert a receiver, source reorg if A1 relaxed); exactly-once and ordered-commit assertions end to end.
+**E2E suite (TS/Vitest):**
+- Two local EVM nodes + N real attestor processes + an arbitrary-data app and a stub asset app. Full lifecycle with chaos (drop/restart an attestor, revert a receiver, source reorg if A1 relaxed); exactly-once and ordered-commit assertions end to end.
 
-**Adversarial (woven into integration/e2e):** forged attestation from non-member, mutated message vs committed hash, replay, reorg on source (if A1 relaxed).
+> The **stress** and **e2e** suites depend on the attestor worker (subsystem 2) running as a real process; the **integration** suite can run against contracts alone (harness-as-executor) for subsystem 1 in isolation.
 
 ## 10. Decomposition into subsystem specs (next)
 
