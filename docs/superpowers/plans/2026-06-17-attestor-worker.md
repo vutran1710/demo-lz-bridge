@@ -25,6 +25,20 @@
 
 > Phase headings are tagged with their milestone. Stop and review at each milestone boundary.
 
+**Relationship to the overall plan.** This is program milestone **P3** in `2026-06-17-overall-plan.md`. The **e2e + stress acceptance suites are authored in P1** (overall plan, `tests/src/acceptance/`) *before* this plan runs — they are the program CA baseline. **Do not re-author them here.** Tasks 3–5 below are therefore re-scoped: they **reference and run** the P1 acceptance files (and add only any worker-specific harness wiring they still need). This plan’s own TDD tiers are: the **worker integration suite** (TDD entry point) and **per-step `go test`** (inner loop, §9.3).
+
+**TDD overlay (per implementation task in Phase 2).** Before each step’s Go code, add a failing `go test` for that step’s detail, implement to green, commit:
+
+| Phase-2 task | Required failing `go test` first |
+|---|---|
+| 6 packet | `packet_test.go` — `Parse` offsets + `PayloadHash` golden vector matching `packet.ts`/`PacketCodec.sol` |
+| 7 client/cursor | `cursor_test.go` — load-default-zero, atomic save, torn-write recovery |
+| 8 finality | `finality_test.go` — `Confirmed` boundary (head==block+confs-1) |
+| 9 submitter | `submitter_test.go` — tx built with correct selector/args; nonce serialization |
+| 10 Run loop | covered by the P1 e2e suite turning green (integration-level) |
+
+(CA note: the **exit criteria** column above **is** each milestone’s CA gate; P3’s gate is the P1 acceptance baseline going green.)
+
 ---
 
 ## File Structure

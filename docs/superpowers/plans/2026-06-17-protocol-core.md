@@ -29,6 +29,20 @@ Each milestone is independently reviewable and ends in a committed, demonstrable
 
 > Phase headings below are tagged with their milestone (e.g. `[M3]`) so executors can checkpoint at milestone boundaries.
 
+**Relationship to the overall plan.** This is program milestone **P2** in `2026-06-17-overall-plan.md`. The program’s e2e + stress **acceptance baseline (P1)** is authored *before* this plan runs and is the ultimate CA. The **exit criteria** column above **is** each milestone’s CA gate. The integration suite (M3) below is this subsystem’s **TDD entry point** (written red first); see the per-step overlay next.
+
+**TDD overlay (per implementation task in Phase 3).** The plan steps already follow red→green at the integration level. Within each Phase-3 task, also apply the **unit-test inner loop (§9.3)** in Foundry: before writing a step’s Solidity, add a failing `forge test` for that step’s detail, then implement to green, then commit. Map:
+
+| Phase-3 task | Required failing `forge test` first |
+|---|---|
+| 11 PacketCodec | `test/Codec.t.sol` — header offsets, `guidOf`, `payloadHash`, `decodeHeader` round-trip + fuzz |
+| 12 OApp | `test/OApp.t.sol` — `onlyEndpoint`/`onlyPeer` reverts, peer storage |
+| 13 Send | `test/Send.t.sol` — outbound nonce monotonicity, `PacketSent` emit |
+| 14 ReceiveLib | `test/Uln.t.sol` — threshold arithmetic (under/exact/over), non-member reject, double-commit reject |
+| 15 Endpoint recv | `test/Channel.t.sol` — gap-free verify, hash-mismatch reject, clear-on-execute, parked-retry |
+
+(Add `test/` back to `foundry.toml` for these unit tests; black-box suites stay in `/tests`.)
+
 ---
 
 ## File Structure

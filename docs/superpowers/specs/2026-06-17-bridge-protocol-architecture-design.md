@@ -33,7 +33,7 @@ Build a **generic cross-chain message-passing protocol** between **two internal,
 
 **Open questions** (do not block architecture; resolve before/within subsystem specs):
 - **OQ1 — Fee/gas model:** who funds destination execution gas? Options: operator-funded executor (no on-chain fee), or sender prepays native fee at `send()` (LZ-faithful). *Leaning operator-funded for an internal network; confirm.*
-- ~~OQ2 — Stack~~ **(resolved):** attestor + executor workers in **Go** (go-ethereum tooling); protocol-core contracts in **Foundry** (Solidity, build/deploy only — no forge unit tests); **all tests are integration-level in TypeScript + Vitest + viem** against local nodes (§9).
+- ~~OQ2 — Stack~~ **(resolved):** attestor + executor workers in **Go** (go-ethereum tooling); protocol-core contracts in **Foundry** (Solidity). **Three test tiers (§9):** acceptance (e2e+stress, TS/Vitest+viem) built first as the CA baseline; integration (TS/Vitest) per subsystem; unit (Foundry `forge test` / `go test`) per implementation step under TDD.
 - **OQ3 — Ordered semantics precision:** does a parked (failed-execution) message block later nonces on the same channel, or may later nonces execute? See §7 for the proposed rule.
 - **OQ4 — Key management:** attestor signing keys (HSM / KMS / threshold-sig).
 
@@ -297,22 +297,23 @@ Per (OApp, remote EID): send library, receive library, `UlnConfig` (attestor set
 
 ## 9. Testing strategy
 
-**Decided:** **No unit tests** (treated as implementation detail). Testing is **black-box integration** only, written in **TypeScript + Vitest**, driving deployed contracts (via viem) and real worker processes against local EVM node(s). All suites are written **red before any component logic** (test-suites-first discipline). Components are exercised only through their public surface: contract ABIs, emitted events, and worker process behavior.
+**Conformance/Acceptance (CA):** every milestone has a CA gate — a defined set of executable checks that must pass (or be **red-by-design** at baseline) for the milestone to be "done". The program's *ultimate* CA baseline is the e2e + stress suites (below), authored **first**.
 
-Phase-1 note: because `Endpoint.lzReceive` is permissionless, the **TS harness acts as the executor** (calls `lzReceive` itself), so the full send→verify→commit→execute lifecycle is testable before the production executor worker (subsystem 3) exists.
+Three tiers:
 
-**Integration suite (TS/Vitest):**
-- Deploy the full contract set to a local node; wire config (libs, M-of-N attestor set, peers).
-- Full send→verify→commit→execute happy path; reverting receiver → park → retry → success; under-threshold stall; out-of-order commit rejection; double-commit rejection; replay rejection; peer-auth rejection; mutated-message-vs-committed-hash rejection.
-- Attestor worker (subsystem 2) observing real `PacketSent` and driving `verify`/`commitVerification`; partial-attestor-set liveness (M-1 healthy ⇒ stall, M healthy ⇒ commit); attestor crash/restart idempotency.
+### 9.1 Acceptance tier — built FIRST (the CA baseline)
+Black-box, **TypeScript + Vitest + viem**, against local EVM node(s) and real worker processes. Authored before any component logic and held **red** until implementation turns it green. The arbitrary-data transfer scenario makes these simple to express and therefore a trustworthy north star: *send arbitrary `bytes` from app A → app B; assert delivered intact, exactly once, in order.*
 
-**Stress suite (TS/Vitest):**
-- Sustained + burst packet throughput on one channel; many concurrent channels; large messages; nonce-gap pressure; attestor catch-up after induced lag; worker restart under load. Assert no gaps / no double-commit / no lost packets; record commit latency.
+- **E2E suite:** two local nodes + N real attestor processes + an arbitrary-data app (and a stub asset app). Full lifecycle; chaos (drop/restart an attestor, revert a receiver, source reorg if A1 relaxed); exactly-once + ordered-commit assertions end to end. Because `Endpoint.lzReceive` is permissionless, the **harness plays the executor** until subsystem 3 exists.
+- **Stress suite:** sustained + burst throughput on one channel; many concurrent channels; large messages; nonce-gap pressure; attestor catch-up after lag; worker restart under load. Assert no gaps / no double-commit / no lost packets; record commit latency.
 
-**E2E suite (TS/Vitest):**
-- Two local EVM nodes + N real attestor processes + an arbitrary-data app and a stub asset app. Full lifecycle with chaos (drop/restart an attestor, revert a receiver, source reorg if A1 relaxed); exactly-once and ordered-commit assertions end to end.
+### 9.2 Integration tier — per subsystem, TDD entry point
+Black-box **TS/Vitest** suites scoped to one subsystem (e.g. protocol-core contracts alone via harness-as-executor; attestor↔contract). For each implementation, the **integration suite is written first** (red) before the subsystem's code — the TDD entry point at the subsystem level.
 
-> The **stress** and **e2e** suites depend on the attestor worker (subsystem 2) running as a real process; the **integration** suite can run against contracts alone (harness-as-executor) for subsystem 1 in isolation.
+### 9.3 Unit tier — per implementation step, TDD inner loop
+Within each implementation step, **TDD with unit tests in the native toolchain**: Foundry (`forge test`) for Solidity, `go test` for the Go worker. Write the failing unit test for the step, implement minimally, green, commit. Unit tests cover step-level detail (codec byte offsets, threshold arithmetic, nonce edge cases, payload-hash recompute, cursor atomicity) that black-box suites assert only end-to-end.
+
+> **Discipline (decided):** acceptance suites (9.1) first → then, per subsystem, integration suite (9.2) → then per-step unit-test TDD (9.3) while implementing. A milestone is complete only when its CA gate passes.
 
 ## 10. Decomposition into subsystem specs (next)
 
