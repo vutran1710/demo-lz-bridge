@@ -46,7 +46,7 @@ describe('acceptance: arbitrary data transfer', () => {
     const { guid, payloadHash } = encodePacket(nonce, EID_SRC, net.appSrc, EID_DST, net.appDst, message)
     const committed = await pollUntil(
       async () => (await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, nonce)) === payloadHash,
-      60_000,
+      30_000,
     )
     expect(committed).toBe(true) // attestors must have driven the commit
     await execute(net.dctx, { srcEid: EID_SRC, sender: pad(net.appSrc, { size: 32 }), nonce }, net.appDst, guid, message)

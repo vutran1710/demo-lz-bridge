@@ -37,7 +37,7 @@ describe('acceptance: chaos / fault tolerance', () => {
     await trySend(net.sctx, net.appSrc, message)
     const committed = await pollUntil(
       async () => (await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, nonce)) === payloadHash,
-      60_000,
+      30_000,
     )
     expect(committed).toBe(true)
   })
@@ -53,7 +53,7 @@ describe('acceptance: chaos / fault tolerance', () => {
     workers[0] = startAttestor(net.attestorEnv(net.attestorIdxs[0]))
     const committed = await pollUntil(
       async () => (await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, nonce)) === payloadHash,
-      60_000,
+      30_000,
     )
     expect(committed).toBe(true)
   })

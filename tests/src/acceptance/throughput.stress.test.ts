@@ -34,7 +34,7 @@ describe('acceptance: stress / throughput', () => {
 
       const reached = await pollUntil(
         async () => (await inboundNonce(net.dctx, net.appDst, net.appSrc)) === BigInt(N),
-        280_000,
+        90_000,
       )
       expect(reached).toBe(true)
 
@@ -44,6 +44,6 @@ describe('acceptance: stress / throughput', () => {
         expect(h).not.toBe(EMPTY) // every nonce committed — no gaps
       }
     },
-    300_000,
+    120_000,
   )
 })
