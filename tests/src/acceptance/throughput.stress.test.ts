@@ -5,8 +5,10 @@ import { buildWorker, startAttestor, type WorkerHandle } from '../harness/worker
 import { trySend, inboundNonce, inboundPayloadHash } from './helpers'
 import { pollUntil } from '../harness/poll'
 
-// Stress acceptance: throughput + burst with no gaps / no double-commit / no lost packets.
-// RED until P2/P3.
+// Stress acceptance (2 anvil chains): verify+commit layer under load — every packet committed in
+// strict order with no gaps and no loss/duplication. Delivery/receipt correctness is covered by
+// transfer.e2e; receipt-AT-SCALE (multi-channel, parallel) is added in P4.M3 with the real
+// Executor, since a single channel's ordered delivery is inherently sequential.
 describe('acceptance: stress / throughput', () => {
   let net: TwoNode
   let workers: WorkerHandle[] = []
@@ -27,23 +29,23 @@ describe('acceptance: stress / throughput', () => {
   }
 
   test(
-    'sustained: 200 packets commit in order with no gaps',
+    'sustained: 200 packets committed in order with no gaps or loss',
     async () => {
       const N = 200
       for (let i = 1; i <= N; i++) await trySend(net.sctx, net.appSrc, msg(i))
 
       const reached = await pollUntil(
         async () => (await inboundNonce(net.dctx, net.appDst, net.appSrc)) === BigInt(N),
-        280_000,
+        90_000,
       )
       expect(reached).toBe(true)
 
       const EMPTY = ('0x' + '0'.repeat(64)) as Hex
       for (let i = 1; i <= N; i++) {
         const h = await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, BigInt(i))
-        expect(h).not.toBe(EMPTY) // every nonce committed — no gaps
+        expect(h).not.toBe(EMPTY) // every nonce committed — no gaps, no loss
       }
     },
-    300_000,
+    120_000,
   )
 })

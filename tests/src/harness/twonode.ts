@@ -4,6 +4,7 @@ import { clients, KEYS } from './clients'
 import { deployStack, type Ctx } from './deploy'
 import { deployApp, ulnConfigBytes } from './app'
 import { ABI } from './abis'
+import { startCommitter } from './committer'
 
 export const EID_SRC = 1
 export const EID_DST = 2
@@ -56,6 +57,9 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     [{ eid: EID_SRC, configType: 2, config: cfg }],
   ])
 
+  // M1 shim: harness commit-stage (the attestor is verify-only; the real Executor replaces this in M3).
+  const committer = startCommitter(sctx, dctx)
+
   const attestorEnv = (i: number) => ({
     ATTESTOR_ID: `a${i}`,
     SRC_RPC: src.rpc,
@@ -78,6 +82,7 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     attestorIdxs,
     attestorEnv,
     stop: () => {
+      committer.stop()
       src.stop()
       dst.stop()
     },
