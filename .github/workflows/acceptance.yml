@@ -10,7 +10,7 @@ on:
 
 jobs:
   acceptance:
-    name: e2e + stress (informational until P3)
+    name: Acceptance (e2e + sad-paths + ring + stress)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
