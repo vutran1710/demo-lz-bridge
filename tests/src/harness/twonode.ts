@@ -28,7 +28,12 @@ export type TwoNode = {
 }
 
 // Two local chains (src EID 1, dst EID 2), a channel appSrc -> appDst, M-of-N attestors on the dst.
-export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<TwoNode> {
+export async function twoNode(
+  M = 2,
+  srcPort = 8600,
+  dstPort = 8610,
+  dstApp: 'AppEcho' | 'AppRevert' = 'AppEcho',
+): Promise<TwoNode> {
   // unique per invocation so a fresh chain never inherits a stale block cursor from a prior run
   const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const src = await startAnvil(srcPort)
@@ -38,7 +43,7 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
   const sctx = await deployStack(src.rpc, EID_SRC, sc.pub as any, sc.wallets as any)
   const dctx = await deployStack(dst.rpc, EID_DST, dc.pub as any, dc.wallets as any)
   const appSrc = await deployApp(sctx, 'AppEcho')
-  const appDst = await deployApp(dctx, 'AppEcho')
+  const appDst = await deployApp(dctx, dstApp)
 
   const attestorIdxs = [1, 2, 3]
   const optional = attestorIdxs.map((i) => sc.accounts[i].address as Hex)
