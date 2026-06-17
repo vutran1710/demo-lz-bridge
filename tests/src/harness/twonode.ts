@@ -28,6 +28,8 @@ export type TwoNode = {
 
 // Two local chains (src EID 1, dst EID 2), a channel appSrc -> appDst, M-of-N attestors on the dst.
 export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<TwoNode> {
+  // unique per invocation so a fresh chain never inherits a stale block cursor from a prior run
+  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const src = await startAnvil(srcPort)
   const dst = await startAnvil(dstPort)
   const sc = clients(src.rpc)
@@ -63,7 +65,7 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     ATTESTOR_KEY: KEYS[i].slice(2),
     CONFIRMATIONS: '1',
     POLL_MS: '150',
-    CURSOR_PATH: `/tmp/cursor-a${i}-${srcPort}-${dstPort}.cursor`,
+    CURSOR_PATH: `/tmp/cursor-a${i}-${srcPort}-${dstPort}-${runId}.cursor`,
   })
 
   return {
