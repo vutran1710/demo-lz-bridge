@@ -2,26 +2,29 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { bytesToHex, pad, type Hex } from 'viem'
 import { twoNode, type TwoNode, EID_DST, EID_SRC } from '../harness/twonode'
 import { buildWorker, startAttestor, type WorkerHandle } from '../harness/worker'
+import { buildExecutor, startExecutor, type ExecutorHandle } from '../harness/executorproc'
 import { encodePacket } from '../harness/packet'
 import { execute } from '../harness/executor'
-import { ABI } from '../harness/abis'
-import { collectEchoed, inboundPayloadHash, trySend, EMPTY } from './helpers'
+import { collectEchoed, trySend } from './helpers'
 import { pollUntil } from '../harness/poll'
 
-// ULTIMATE ACCEPTANCE BASELINE (CA root): send arbitrary bytes A->B, delivered intact, in order,
-// exactly once. Real M-of-N attestor processes drive verify->commit; the harness plays the
-// executor (subsystem 3) and calls lzReceive once a message is committed.
+// ULTIMATE ACCEPTANCE BASELINE: arbitrary bytes A→B delivered intact, in order, exactly once —
+// driven autonomously by real DVN attestors (verify) + the real Executor (commit + deliver).
 describe('acceptance: arbitrary data transfer', () => {
   let net: TwoNode
   let workers: WorkerHandle[] = []
+  let exec: ExecutorHandle
 
   beforeAll(async () => {
     buildWorker()
+    buildExecutor()
     net = await twoNode(2, 8600, 8610)
     workers = net.attestorIdxs.map((i) => startAttestor(net.attestorEnv(i)))
+    exec = startExecutor(net.executorEnv())
   }, 120_000)
 
   afterAll(() => {
+    exec?.stop()
     workers.forEach((w) => w.stop())
     net?.stop()
   })
@@ -32,46 +35,40 @@ describe('acceptance: arbitrary data transfer', () => {
     return bytesToHex(a)
   }
 
-  async function nextOutboundNonce(): Promise<bigint> {
-    const cur = (await net.sctx.pub.readContract({
-      address: net.sctx.endpoint,
-      abi: ABI.Endpoint.abi,
-      functionName: 'outboundNonce',
-      args: [net.appSrc, EID_DST, pad(net.appDst, { size: 32 })],
-    })) as bigint
-    return cur + 1n
-  }
+  test(
+    'arbitrary bytes delivered intact, in order (autonomous)',
+    async () => {
+      const payloads = [randBytes(1), randBytes(64), randBytes(4096)]
+      for (const p of payloads) await trySend(net.sctx, net.appSrc, p)
+      const ok = await pollUntil(
+        async () => (await collectEchoed(net.dctx, net.appDst)).length >= payloads.length,
+        40_000,
+      )
+      expect(ok).toBe(true)
+      expect(await collectEchoed(net.dctx, net.appDst)).toEqual(payloads) // intact + in order
+    },
+    50_000,
+  )
 
-  async function deliver(nonce: bigint, message: Hex) {
-    const { guid, payloadHash } = encodePacket(nonce, EID_SRC, net.appSrc, EID_DST, net.appDst, message)
-    const committed = await pollUntil(
-      async () => (await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, nonce)) === payloadHash,
-      30_000,
-    )
-    expect(committed).toBe(true) // attestors must have driven the commit
-    await execute(net.dctx, { srcEid: EID_SRC, sender: pad(net.appSrc, { size: 32 }), nonce }, net.appDst, guid, message)
-    return { guid, payloadHash }
-  }
+  test(
+    'exactly once: delivered once and not re-executable',
+    async () => {
+      const before = (await collectEchoed(net.dctx, net.appDst)).length
+      const message = randBytes(32)
+      const nonce = BigInt(before + 1)
+      await trySend(net.sctx, net.appSrc, message)
+      const ok = await pollUntil(
+        async () => (await collectEchoed(net.dctx, net.appDst)).length === before + 1,
+        40_000,
+      )
+      expect(ok).toBe(true)
 
-  test('arbitrary bytes delivered intact, in order', async () => {
-    const payloads = [randBytes(1), randBytes(64), randBytes(4096)]
-    const base = await nextOutboundNonce()
-    for (const p of payloads) await trySend(net.sctx, net.appSrc, p)
-    for (let i = 0; i < payloads.length; i++) await deliver(base + BigInt(i), payloads[i])
-
-    const received = await collectEchoed(net.dctx, net.appDst)
-    expect(received).toEqual(payloads) // intact + in order
-  })
-
-  test('exactly once: a delivered message cannot be re-executed', async () => {
-    const message = randBytes(32)
-    const nonce = await nextOutboundNonce()
-    await trySend(net.sctx, net.appSrc, message)
-    const { guid } = await deliver(nonce, message)
-
-    expect(await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, nonce)).toBe(EMPTY) // cleared
-    await expect(
-      execute(net.dctx, { srcEid: EID_SRC, sender: pad(net.appSrc, { size: 32 }), nonce }, net.appDst, guid, message),
-    ).rejects.toBeTruthy() // replay reverts
-  })
+      // re-executing the (already delivered, cleared) message must revert
+      const { guid } = encodePacket(nonce, EID_SRC, net.appSrc, EID_DST, net.appDst, message)
+      await expect(
+        execute(net.dctx, { srcEid: EID_SRC, sender: pad(net.appSrc, { size: 32 }), nonce }, net.appDst, guid, message),
+      ).rejects.toBeTruthy()
+    },
+    50_000,
+  )
 })

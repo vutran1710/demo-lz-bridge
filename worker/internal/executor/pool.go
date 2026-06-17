@@ -11,7 +11,7 @@ import (
 // On a signer death its channels deterministically re-lease to a live signer.
 type Pool struct {
 	mu   sync.Mutex
-	ids  []string        // all signer ids, sorted
+	ids  []string // all signer ids, sorted
 	dead map[string]bool
 }
 
