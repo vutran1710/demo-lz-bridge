@@ -1,0 +1,17 @@
+# Node
+node_modules/
+tests/node_modules/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Go
+worker/bin/
+
+# Local
+*.cursor
+.DS_Store
+.env
+.env.*

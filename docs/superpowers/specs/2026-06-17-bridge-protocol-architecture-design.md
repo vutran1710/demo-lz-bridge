@@ -37,6 +37,19 @@ Build a **generic cross-chain message-passing protocol** between **two internal,
 - **OQ3 — Ordered semantics precision:** does a parked (failed-execution) message block later nonces on the same channel, or may later nonces execute? See §7 for the proposed rule.
 - **OQ4 — Key management:** attestor signing keys (HSM / KMS / threshold-sig).
 
+## 2.1 Licensing & sourcing (decided)
+
+*Reference information, not legal advice — confirm with counsel.*
+
+LayerZero V2's **core contracts are licensed `LZBL-1.2`** (verified in-source: `lz-evm-protocol-v2` = EndpointV2/PacketV1Codec/GUID; `lz-evm-messagelib-v2` = SendUln302/ReceiveUln302/DVN/Executor). LZBL-1.2 states verbatim: *"Permissioned Applications shall not have a Change Date and may not use the Licensed Work,"* where Permissioned Applications = networks/apps limited to designated participants. **This bridge (two internal, permissioned chains) falls in that category**, so the LZBL core is not usable in production here without a LayerZero Labs commercial license.
+
+**Decision: clean-room build.** We implement our own MIT core (Endpoint, message libs, codec, DVN, executor) and reuse only **MIT-licensed** material from LayerZero:
+- The `ILayerZero*` **interfaces** (e.g. `ILayerZeroDVN`, `ILayerZeroExecutor`) — MIT — as the faithful interface contract.
+- The `@layerzerolabs/oapp-evm` / `oft-evm` standard (MIT) — *optionally*; we currently ship a self-contained clean-room OApp mirroring its signatures to avoid dependency/version-skew, swappable later.
+- The `PacketV1Codec` **byte layout** (a format, reimplemented in our own code): header 81 bytes, `guid = keccak256(nonce, srcEid, sender, dstEid, receiver)`, `payloadHash = keccak256(guid ‖ message)`.
+
+Our `UlnConfig` mirrors LayerZero's field semantics (`confirmations`, required/optional DVN sets, optional threshold) as our own MIT type. Patent/IP status of the protocol design was not assessed — open legal item.
+
 ## 3. Architecture overview
 
 Both chains run the **same immutable contract set**; off-chain workers bridge them.

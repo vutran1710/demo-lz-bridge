@@ -1,0 +1,13 @@
+{
+  "name": "demo-lz-bridge",
+  "private": true,
+  "scripts": {
+    "build:contracts": "cd contracts && forge build",
+    "build:worker": "cd worker && go build ./...",
+    "test:smoke": "cd tests && pnpm vitest run src/smoke",
+    "test:integration": "cd tests && pnpm vitest run src/integration",
+    "test:e2e": "cd tests && pnpm vitest run src/acceptance/*.e2e.test.ts",
+    "test:stress": "cd tests && pnpm vitest run src/acceptance/*.stress.test.ts",
+    "typecheck": "cd tests && pnpm tsc --noEmit"
+  }
+}
