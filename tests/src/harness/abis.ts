@@ -17,4 +17,5 @@ export const ABI = {
   AppEcho: artifact('AppEcho.sol/AppEcho.json'),
   AppRevert: artifact('AppRevert.sol/AppRevert.json'),
   RelayApp: artifact('RelayApp.sol/RelayApp.json'),
+  UserApp: artifact('UserApp.sol/UserApp.json'),
 }

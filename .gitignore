@@ -15,3 +15,6 @@ worker/bin/
 .DS_Store
 .env
 .env.*
+playground/public/
+playground/node_modules/
+worker/bin/
