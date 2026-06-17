@@ -18,6 +18,7 @@ type Pathway struct {
 	DstReceiveLib string `json:"dstReceiveLib"`
 	DstEndpoint   string `json:"dstEndpoint"` // required by the executor; unused by the attestor
 	Confirmations uint64 `json:"confirmations"`
+	DstEid        uint32 `json:"dstEid"` // 0 = no filter (single-pathway back-compat); else only handle packets bound here
 }
 
 // Load returns the pathway list. If PATHWAYS_JSON is set it is parsed; otherwise a single pathway

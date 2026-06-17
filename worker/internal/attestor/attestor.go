@@ -12,12 +12,14 @@ import (
 	"github.com/onematrix/bridge/worker/internal/config"
 	"github.com/onematrix/bridge/worker/internal/packet"
 	"github.com/onematrix/bridge/worker/internal/pathway"
+	"github.com/onematrix/bridge/worker/internal/status"
 	"github.com/onematrix/bridge/worker/internal/store"
 	"github.com/onematrix/bridge/worker/internal/submit"
 )
 
 type Attestor struct {
-	cfg *config.Config
+	cfg      *config.Config
+	reporter *status.Reporter
 }
 
 func New(cfg *config.Config) *Attestor {
@@ -31,6 +33,8 @@ func (a *Attestor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.reporter = status.New(a.cfg.AttestorID, "dvn", len(pws))
+	a.reporter.Serve(ctx, a.cfg.StatusAddr)
 	var wg sync.WaitGroup
 	for _, pw := range pws {
 		wg.Add(1)
@@ -97,6 +101,9 @@ func (a *Attestor) tick(
 		if perr != nil {
 			continue
 		}
+		if pw.DstEid != 0 && p.DstEid != pw.DstEid {
+			continue // packet bound for a different destination; another pathway handles it
+		}
 		guid := p.Guid.Hex()
 		if verified[guid] {
 			continue
@@ -107,6 +114,7 @@ func (a *Attestor) tick(
 			continue
 		}
 		verified[guid] = true
+		a.reporter.Inc()
 	}
 	if !hadError {
 		*last = safe

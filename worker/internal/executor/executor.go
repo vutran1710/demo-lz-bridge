@@ -17,17 +17,19 @@ import (
 	"github.com/onematrix/bridge/worker/internal/packet"
 	"github.com/onematrix/bridge/worker/internal/pathway"
 	"github.com/onematrix/bridge/worker/internal/signer"
+	"github.com/onematrix/bridge/worker/internal/status"
 )
 
 // Config holds pathway-independent executor settings. Routing comes from the pathway package.
 type Config struct {
-	ID     string
-	Keys   []string // signer pool (hex); reused per destination chain
-	PollMs int
+	ID         string
+	Keys       []string // signer pool (hex); reused per destination chain
+	PollMs     int
+	StatusAddr string // optional host:port for the /status endpoint
 }
 
 func Load() (*Config, error) {
-	c := &Config{ID: envOr("EXECUTOR_ID", "exec"), PollMs: int(atou(os.Getenv("POLL_MS"), 100))}
+	c := &Config{ID: envOr("EXECUTOR_ID", "exec"), PollMs: int(atou(os.Getenv("POLL_MS"), 100)), StatusAddr: os.Getenv("STATUS_ADDR")}
 	for _, k := range strings.Split(os.Getenv("EXECUTOR_KEYS"), ",") {
 		if s := strings.TrimSpace(k); s != "" {
 			c.Keys = append(c.Keys, s)
@@ -50,9 +52,11 @@ func (e *Executor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rep := status.New(e.cfg.ID, "executor", len(pws))
+	rep.Serve(ctx, e.cfg.StatusAddr)
 	var wg sync.WaitGroup
 	for _, pw := range pws {
-		r, err := e.newRunner(ctx, pw)
+		r, err := e.newRunner(ctx, pw, rep)
 		if err != nil {
 			return err
 		}
@@ -73,13 +77,15 @@ type runner struct {
 	receiveLib    common.Address
 	endpoint      common.Address
 	confirmations uint64
+	dstEid        uint32
 	pollMs        int
+	reporter      *status.Reporter
 
 	mu      sync.Mutex
 	running map[string]bool
 }
 
-func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway) (*runner, error) {
+func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway, rep *status.Reporter) (*runner, error) {
 	clients, err := chain.Dial(pw.SrcRPC, pw.DstRPC)
 	if err != nil {
 		return nil, err
@@ -93,7 +99,7 @@ func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway) (*runner, 
 	r := &runner{
 		id: e.cfg.ID + ":" + pw.ID, clients: clients, reader: reader, sched: NewScheduler(),
 		signers: map[string]*signer.Signer{}, receiveLib: receiveLib, endpoint: endpoint,
-		confirmations: pw.Confirmations, pollMs: e.cfg.PollMs, running: map[string]bool{},
+		confirmations: pw.Confirmations, dstEid: pw.DstEid, pollMs: e.cfg.PollMs, running: map[string]bool{}, reporter: rep,
 	}
 	ids := []string{}
 	for i, k := range e.cfg.Keys {
@@ -139,6 +145,9 @@ func (r *runner) watch(ctx context.Context) {
 				p, perr := packet.Parse(enc)
 				if perr != nil {
 					continue
+				}
+				if r.dstEid != 0 && p.DstEid != r.dstEid {
+					continue // bound for a different destination; another pathway handles it
 				}
 				r.sched.Add(channelKey(p), Item{
 					Header: p.Header, Guid: p.Guid, Message: p.Message, PayloadHash: p.PayloadHash, Nonce: p.Nonce,
@@ -192,6 +201,7 @@ func (r *runner) worker(ctx context.Context, channel string) {
 			continue
 		}
 		r.sched.Done(channel, it.Nonce)
+		r.reporter.Inc()
 	}
 }
 
