@@ -12,6 +12,10 @@ export default defineConfig({
       '/rpc/a': { target: 'http://127.0.0.1:8800', changeOrigin: true, rewrite: (p) => p.replace(/^\/rpc\/a/, '') },
       '/rpc/b': { target: 'http://127.0.0.1:8802', changeOrigin: true, rewrite: (p) => p.replace(/^\/rpc\/b/, '') },
       '/rpc/c': { target: 'http://127.0.0.1:8804', changeOrigin: true, rewrite: (p) => p.replace(/^\/rpc\/c/, '') },
+      // worker /status endpoints
+      '/status/a1': { target: 'http://127.0.0.1:9101', changeOrigin: true, rewrite: () => '/status' },
+      '/status/a2': { target: 'http://127.0.0.1:9102', changeOrigin: true, rewrite: () => '/status' },
+      '/status/exec': { target: 'http://127.0.0.1:9201', changeOrigin: true, rewrite: () => '/status' },
     },
   },
 })

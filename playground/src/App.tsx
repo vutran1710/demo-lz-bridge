@@ -5,6 +5,7 @@ import type { Deployment, ChainCfg } from './types'
 import { publicFor, walletFor } from './viem'
 import { userAppAbi, sendLibAbi, receiveLibAbi } from './abi'
 import { decodePacket } from './codec'
+import { System } from './System'
 
 type Flight = {
   id: string
@@ -138,6 +139,8 @@ export default function App() {
       <h1>OneMatrix Bridge — Playground</h1>
       <div className="sub">3 chains · 3 wallets · real DVN (2-of-3) + Executor · arbitrary cross-chain data</div>
       <div className="warn">⚠ Local anvil test wallets, private keys embedded, exposed via public tunnel. No real funds.</div>
+
+      <System dep={dep} />
 
       <div className="panel">
         <h2>Send</h2>

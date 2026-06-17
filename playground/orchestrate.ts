@@ -108,6 +108,12 @@ async function main() {
       key: w.key,
       apps: Object.fromEntries(CHAINS.map((c, ci) => [c.eid, userApps[wi][ci]])),
     })),
+    workers: [
+      { id: 'a1', role: 'dvn', status: '/status/a1', addresses: [privateKeyToAccount(ATTESTOR_KEYS[0]).address] },
+      { id: 'a2', role: 'dvn', status: '/status/a2', addresses: [privateKeyToAccount(ATTESTOR_KEYS[1]).address] },
+      { id: 'exec', role: 'executor', status: '/status/exec', addresses: EXECUTOR_KEYS.map((k) => privateKeyToAccount(k).address) },
+    ],
+    dvnSet: { configured: ATTESTOR_ADDRS.length, threshold: M },
   }
   mkdirSync(resolve(__dirname, 'public'), { recursive: true })
   writeFileSync(resolve(__dirname, 'public', 'deployment.json'), JSON.stringify(deployment, null, 2))
@@ -117,7 +123,7 @@ async function main() {
   const pathways: any[] = []
   for (let s = 0; s < CHAINS.length; s++)
     for (let d = 0; d < CHAINS.length; d++)
-      if (s !== d) pathways.push({ id: `${CHAINS[s].key}${CHAINS[d].key}`, srcRpc: nodes[s].rpc, dstRpc: nodes[d].rpc, dstReceiveLib: ctxs[d].receiveLib, dstEndpoint: ctxs[d].endpoint, confirmations: 1 })
+      if (s !== d) pathways.push({ id: `${CHAINS[s].key}${CHAINS[d].key}`, srcRpc: nodes[s].rpc, dstRpc: nodes[d].rpc, dstReceiveLib: ctxs[d].receiveLib, dstEndpoint: ctxs[d].endpoint, dstEid: CHAINS[d].eid, confirmations: 1 })
   const PATHWAYS_JSON = JSON.stringify(pathways)
 
   console.log('▶ building Go workers…')
@@ -126,10 +132,10 @@ async function main() {
 
   console.log('▶ starting real DVN attestors (2-of-3) + Executor…')
   ATTESTOR_KEYS.forEach((key, i) => {
-    const p = spawnProc('bin/attestor', { ATTESTOR_ID: `a${i + 1}`, ATTESTOR_KEY: key.slice(2), POLL_MS: '150', CURSOR_PATH: `/tmp/pg-a${i}-${Date.now()}`, PATHWAYS_JSON }, `a${i + 1}`)
+    const p = spawnProc('bin/attestor', { ATTESTOR_ID: `a${i + 1}`, ATTESTOR_KEY: key.slice(2), POLL_MS: '150', CURSOR_PATH: `/tmp/pg-a${i}-${Date.now()}`, PATHWAYS_JSON, STATUS_ADDR: `127.0.0.1:${9101 + i}` }, `a${i + 1}`)
     track(`attestor:a${i + 1}`, () => p.kill('SIGINT'))
   })
-  const exec = spawnProc('bin/executor', { EXECUTOR_ID: 'exec', EXECUTOR_KEYS: EXECUTOR_KEYS.join(','), POLL_MS: '120', PATHWAYS_JSON }, 'exec')
+  const exec = spawnProc('bin/executor', { EXECUTOR_ID: 'exec', EXECUTOR_KEYS: EXECUTOR_KEYS.join(','), POLL_MS: '120', PATHWAYS_JSON, STATUS_ADDR: '127.0.0.1:9201' }, 'exec')
   track('executor', () => exec.kill('SIGINT'))
 
   console.log('▶ starting Vite app on :5173…')

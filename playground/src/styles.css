@@ -55,6 +55,9 @@ button:disabled { opacity: 0.5; }
 .mono { font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 2px; }
 .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
 .err { color: var(--red); font-size: 13px; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 999px; vertical-align: middle; }
+.dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot.off { background: var(--red); }
 
 @media (min-width: 720px) {
   .app { max-width: 1040px; padding: 22px; }

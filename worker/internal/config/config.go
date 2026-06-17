@@ -13,6 +13,7 @@ type Config struct {
 	PrivateKey string // one DVN identity, used to verify on every destination chain
 	PollMs     int
 	CursorPath string
+	StatusAddr string // optional host:port for the /status endpoint
 }
 
 func Load() (*Config, error) {
@@ -21,6 +22,7 @@ func Load() (*Config, error) {
 		PrivateKey: os.Getenv("ATTESTOR_KEY"),
 		PollMs:     int(atou(os.Getenv("POLL_MS"), 200)),
 		CursorPath: os.Getenv("CURSOR_PATH"),
+		StatusAddr: os.Getenv("STATUS_ADDR"),
 	}
 	if c.PrivateKey == "" {
 		return nil, errors.New("missing ATTESTOR_KEY")
