@@ -21,6 +21,40 @@ export const sendLibAbi = [
   },
 ] as const
 
+export const endpointAbi = [
+  {
+    type: 'event', name: 'PacketVerified', inputs: [
+      {
+        name: 'origin',
+        type: 'tuple',
+        indexed: false,
+        components: [
+          { name: 'srcEid', type: 'uint32' },
+          { name: 'sender', type: 'bytes32' },
+          { name: 'nonce', type: 'uint64' },
+        ],
+      },
+      { name: 'receiver', type: 'address', indexed: false },
+      { name: 'payloadHash', type: 'bytes32', indexed: false },
+    ],
+  },
+  {
+    type: 'event', name: 'PacketDelivered', inputs: [
+      {
+        name: 'origin',
+        type: 'tuple',
+        indexed: false,
+        components: [
+          { name: 'srcEid', type: 'uint32' },
+          { name: 'sender', type: 'bytes32' },
+          { name: 'nonce', type: 'uint64' },
+        ],
+      },
+      { name: 'receiver', type: 'address', indexed: false },
+    ],
+  },
+] as const
+
 export const receiveLibAbi = [
   { type: 'function', name: 'committed', stateMutability: 'view', inputs: [{ name: '', type: 'bytes32' }, { name: '', type: 'bytes32' }], outputs: [{ name: '', type: 'bool' }] },
 ] as const

@@ -61,6 +61,7 @@ func (a *Attestor) runPathway(ctx context.Context, pw pathway.Pathway) error {
 	cursor := store.NewCursor(a.cfg.CursorPath + "." + pw.ID)
 	last := cursor.Load()
 	verified := map[string]bool{}
+	seen := map[string]bool{}
 
 	t := time.NewTicker(time.Duration(a.cfg.PollMs) * time.Millisecond)
 	defer t.Stop()
@@ -69,7 +70,7 @@ func (a *Attestor) runPathway(ctx context.Context, pw pathway.Pathway) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			a.tick(ctx, pw, clients, sub, cursor, &last, verified)
+			a.tick(ctx, pw, clients, sub, cursor, &last, verified, seen)
 		}
 	}
 }
@@ -82,6 +83,7 @@ func (a *Attestor) tick(
 	cursor *store.Cursor,
 	last *uint64,
 	verified map[string]bool,
+	seen map[string]bool,
 ) {
 	head, err := clients.HeadBlock(ctx)
 	if err != nil || head+1 < pw.Confirmations {
@@ -105,15 +107,69 @@ func (a *Attestor) tick(
 			continue // packet bound for a different destination; another pathway handles it
 		}
 		guid := p.Guid.Hex()
+		if !seen[guid] {
+			seen[guid] = true
+			a.reporter.Event(status.Event{
+				Pathway:         pw.ID,
+				Action:          "observe-packet",
+				Status:          "observed",
+				Contract:        "SendLib",
+				Method:          "PacketSent",
+				ContractAddress: "",
+				Guid:            guid,
+				Nonce:           p.Nonce,
+				SrcEid:          p.SrcEid,
+				DstEid:          p.DstEid,
+				Sender:          common.BytesToAddress(p.Sender[12:]).Hex(),
+				Receiver:        p.Receiver.Hex(),
+				PayloadHash:     p.PayloadHash.Hex(),
+				Detail:          "source PacketSent observed by attestor",
+			})
+		}
 		if verified[guid] {
 			continue
 		}
-		if err := sub.Verify(ctx, p.Header, p.PayloadHash, pw.Confirmations); err != nil {
+		txHash, err := sub.Verify(ctx, p.Header, p.PayloadHash, pw.Confirmations)
+		if err != nil {
+			a.reporter.Event(status.Event{
+				Pathway:         pw.ID,
+				Action:          "submit-verify",
+				Status:          "failed",
+				Contract:        "ReceiveLib",
+				Method:          "verify",
+				ContractAddress: pw.DstReceiveLib,
+				Guid:            guid,
+				Nonce:           p.Nonce,
+				SrcEid:          p.SrcEid,
+				DstEid:          p.DstEid,
+				Sender:          common.BytesToAddress(p.Sender[12:]).Hex(),
+				Receiver:        p.Receiver.Hex(),
+				PayloadHash:     p.PayloadHash.Hex(),
+				Error:           err.Error(),
+				Detail:          "attestor verify submission failed",
+			})
 			log.Printf("[%s] verify %s nonce=%d failed: %v", a.cfg.AttestorID, pw.ID, p.Nonce, err)
 			hadError = true
 			continue
 		}
 		verified[guid] = true
+		a.reporter.Event(status.Event{
+			Pathway:         pw.ID,
+			Action:          "submit-verify",
+			Status:          "submitted",
+			Contract:        "ReceiveLib",
+			Method:          "verify",
+			ContractAddress: pw.DstReceiveLib,
+			TxHash:          txHash.Hex(),
+			Guid:            guid,
+			Nonce:           p.Nonce,
+			SrcEid:          p.SrcEid,
+			DstEid:          p.DstEid,
+			Sender:          common.BytesToAddress(p.Sender[12:]).Hex(),
+			Receiver:        p.Receiver.Hex(),
+			PayloadHash:     p.PayloadHash.Hex(),
+			Detail:          "attestor submitted ReceiveLib.verify",
+		})
 		a.reporter.Inc()
 	}
 	if !hadError {

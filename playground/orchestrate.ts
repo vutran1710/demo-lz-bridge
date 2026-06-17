@@ -101,7 +101,7 @@ async function main() {
 
   // deployment.json for the browser (proxy RPC paths)
   const deployment = {
-    chains: CHAINS.map((c, i) => ({ key: c.key, eid: c.eid, rpc: c.proxy, endpoint: ctxs[i].endpoint, receiveLib: ctxs[i].receiveLib })),
+    chains: CHAINS.map((c, i) => ({ key: c.key, eid: c.eid, rpc: c.proxy, endpoint: ctxs[i].endpoint, sendLib: ctxs[i].sendLib, receiveLib: ctxs[i].receiveLib })),
     wallets: WALLET_KEYS.map((w, wi) => ({
       label: w.label,
       address: privateKeyToAccount(w.key).address,

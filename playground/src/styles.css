@@ -22,6 +22,8 @@ h1 { font-size: 18px; margin: 0 0 2px; }
 .warn { background: #2a1f0c; border: 1px solid #5a4214; color: var(--amber); padding: 10px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 14px; line-height: 1.4; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
 .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.panel-head h2 { margin: 0; }
 
 /* Controls stack on mobile */
 .row { display: flex; flex-direction: column; gap: 12px; }
@@ -58,6 +60,31 @@ button:disabled { opacity: 0.5; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 999px; vertical-align: middle; }
 .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .dot.off { background: var(--red); }
+.row-inline { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.activity-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 10px; background: rgba(255,255,255,0.01); }
+.activity-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.activity-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.activity-item { display: flex; gap: 10px; align-items: flex-start; }
+.activity-dot { width: 10px; height: 10px; border-radius: 999px; margin-top: 4px; flex: 0 0 auto; }
+.activity-dot.done { background: var(--green); box-shadow: 0 0 6px rgba(70,211,154,0.45); }
+.activity-dot.pending { background: var(--amber); box-shadow: 0 0 6px rgba(245,185,85,0.35); }
+.activity-content { min-width: 0; }
+.activity-title { font-size: 13px; line-height: 1.4; }
+.activity-meta { color: var(--muted); font-size: 11px; line-height: 1.5; word-break: break-word; }
+.clear-btn {
+  width: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.clear-btn:hover:not(:disabled) {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--accent);
+}
 
 @media (min-width: 720px) {
   .app { max-width: 1040px; padding: 22px; }
@@ -68,4 +95,5 @@ button:disabled { opacity: 0.5; }
   .toggle { width: auto; }
   .grid3 { grid-template-columns: repeat(3, 1fr); }
   .send-btn { width: auto; }
+  .activity-head { align-items: center; }
 }

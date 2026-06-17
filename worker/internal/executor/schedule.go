@@ -23,16 +23,21 @@ func NewScheduler() *Scheduler {
 	return &Scheduler{executed: map[string]uint64{}, pending: map[string]map[uint64]Item{}}
 }
 
-// Add queues an item for a channel (idempotent per nonce).
-func (s *Scheduler) Add(channel string, it Item) {
+// Add queues an item for a channel (idempotent per nonce) and reports whether it was newly added.
+func (s *Scheduler) Add(channel string, it Item) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending[channel] == nil {
 		s.pending[channel] = map[uint64]Item{}
 	}
-	if it.Nonce > s.executed[channel] {
-		s.pending[channel][it.Nonce] = it
+	if it.Nonce <= s.executed[channel] {
+		return false
 	}
+	if _, exists := s.pending[channel][it.Nonce]; exists {
+		return false
+	}
+	s.pending[channel][it.Nonce] = it
+	return true
 }
 
 // Ready returns the next executable item for a channel (executed+1), if present.

@@ -57,15 +57,18 @@ func New(ctx context.Context, dst *ethclient.Client, receiveLib common.Address, 
 
 // transact sends a method call with an explicit, locally-tracked nonce. On a successful submit the
 // nonce is advanced. A pre-send error (e.g. gas estimation revert) leaves the nonce untouched.
-func (s *Submitter) transact(ctx context.Context, method string, args ...interface{}) error {
+func (s *Submitter) transact(ctx context.Context, method string, args ...interface{}) (common.Hash, error) {
 	opts := *s.auth
 	opts.Context = ctx
 	opts.Nonce = new(big.Int).SetUint64(s.nonce)
-	_, err := s.contract.Transact(&opts, method, args...)
+	tx, err := s.contract.Transact(&opts, method, args...)
 	if err == nil {
 		s.nonce++
 	}
-	return err
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return tx.Hash(), nil
 }
 
 // Address returns the attestor signer address.
@@ -74,13 +77,13 @@ func (s *Submitter) Address() common.Address { return s.auth.From }
 // Verify submits this attestor's verification. Fire-and-forget: Anvil/permissioned chains mine
 // promptly, and bind.Transact uses the pending nonce, so sequential sends stay ordered without
 // paying bind.WaitMined's 1s poll per tx.
-func (s *Submitter) Verify(ctx context.Context, header []byte, payloadHash common.Hash, confirmations uint64) error {
+func (s *Submitter) Verify(ctx context.Context, header []byte, payloadHash common.Hash, confirmations uint64) (common.Hash, error) {
 	return s.transact(ctx, "verify", header, [32]byte(payloadHash), confirmations)
 }
 
 // Commit attempts commitVerification. Transact estimates gas first, so a not-yet-verifiable or
 // already-committed packet returns an error here (no tx sent) — caller treats it as opportunistic.
-func (s *Submitter) Commit(ctx context.Context, header []byte, payloadHash common.Hash) error {
+func (s *Submitter) Commit(ctx context.Context, header []byte, payloadHash common.Hash) (common.Hash, error) {
 	return s.transact(ctx, "commitVerification", header, [32]byte(payloadHash))
 }
 

@@ -19,7 +19,11 @@ export function decodePacket(encoded: Hex) {
   const headerHash = keccak256(header)
   // header: [0]=ver, [1..9)=nonce, [9..13)=srcEid, [13..45)=sender, [45..49)=dstEid, [49..81)=receiver
   const nonce = BigInt(slice(header, 1, 9))
-  return { header, headerHash, guid, message, payloadHash, nonce }
+  const srcEid = Number(BigInt(slice(header, 9, 13)))
+  const sender = slice(header, 13, 45)
+  const dstEid = Number(BigInt(slice(header, 45, 49)))
+  const receiver = slice(header, 49, 81)
+  return { header, headerHash, guid, message, payloadHash, nonce, srcEid, sender, dstEid, receiver }
 }
 
 export { concat, pad }
