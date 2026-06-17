@@ -18,7 +18,9 @@ export function startCommitter(sctx: Ctx, dctx: Ctx): CommitterHandle {
   let nonce = 0
 
   const loop = async () => {
-    const w = dctx.wallets[0]
+    // dedicated account (index 4) so the committer never races nonces with the harness executor
+    // (index 0) or the attestors (1..3).
+    const w = dctx.wallets[4]
     nonce = await dctx.pub.getTransactionCount({ address: w.account!.address, blockTag: 'pending' })
     while (running) {
       try {
