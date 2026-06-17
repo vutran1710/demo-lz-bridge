@@ -4,7 +4,6 @@ import { clients, KEYS } from './clients'
 import { deployStack, type Ctx } from './deploy'
 import { deployApp, ulnConfigBytes } from './app'
 import { ABI } from './abis'
-import { startCommitter } from './committer'
 
 export const EID_SRC = 1
 export const EID_DST = 2
@@ -24,6 +23,7 @@ export type TwoNode = {
   appDst: Hex
   attestorIdxs: number[]
   attestorEnv: (i: number) => Record<string, string>
+  executorEnv: (signerIdxs?: number[]) => Record<string, string>
   stop: () => void
 }
 
@@ -57,9 +57,6 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     [{ eid: EID_SRC, configType: 2, config: cfg }],
   ])
 
-  // M1 shim: harness commit-stage (the attestor is verify-only; the real Executor replaces this in M3).
-  const committer = startCommitter(sctx, dctx)
-
   const attestorEnv = (i: number) => ({
     ATTESTOR_ID: `a${i}`,
     SRC_RPC: src.rpc,
@@ -72,6 +69,19 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     CURSOR_PATH: `/tmp/cursor-a${i}-${srcPort}-${dstPort}-${runId}.cursor`,
   })
 
+  // Executor signer pool: accounts 0,4,5 (disjoint from attestors 1,2,3). Commit + deliver are
+  // permissionless, so any funded accounts work.
+  const executorEnv = (signerIdxs: number[] = [0, 4, 5]) => ({
+    EXECUTOR_ID: 'exec',
+    SRC_RPC: src.rpc,
+    DST_RPC: dst.rpc,
+    DST_RECEIVE_LIB: dctx.receiveLib,
+    DST_ENDPOINT: dctx.endpoint,
+    EXECUTOR_KEYS: signerIdxs.map((i) => KEYS[i]).join(','),
+    CONFIRMATIONS: '1',
+    POLL_MS: '120',
+  })
+
   return {
     src,
     dst,
@@ -81,8 +91,8 @@ export async function twoNode(M = 2, srcPort = 8600, dstPort = 8610): Promise<Tw
     appDst,
     attestorIdxs,
     attestorEnv,
+    executorEnv,
     stop: () => {
-      committer.stop()
       src.stop()
       dst.stop()
     },

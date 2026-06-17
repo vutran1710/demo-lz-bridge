@@ -2,24 +2,27 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { bytesToHex, type Hex } from 'viem'
 import { twoNode, type TwoNode } from '../harness/twonode'
 import { buildWorker, startAttestor, type WorkerHandle } from '../harness/worker'
-import { trySend, inboundNonce, inboundPayloadHash } from './helpers'
+import { buildExecutor, startExecutor, type ExecutorHandle } from '../harness/executorproc'
+import { trySend, inboundNonce, collectEchoed } from './helpers'
 import { pollUntil } from '../harness/poll'
 
-// Stress acceptance (2 anvil chains): verify+commit layer under load — every packet committed in
-// strict order with no gaps and no loss/duplication. Delivery/receipt correctness is covered by
-// transfer.e2e; receipt-AT-SCALE (multi-channel, parallel) is added in P4.M3 with the real
-// Executor, since a single channel's ordered delivery is inherently sequential.
+// Stress acceptance (2 anvil chains, real DVN + Executor): 200 packets committed in order with no
+// gaps AND received by the destination app intact, in order — no loss, no duplication.
 describe('acceptance: stress / throughput', () => {
   let net: TwoNode
   let workers: WorkerHandle[] = []
+  let exec: ExecutorHandle
 
   beforeAll(async () => {
     buildWorker()
+    buildExecutor()
     net = await twoNode(2, 8640, 8650)
     workers = net.attestorIdxs.map((i) => startAttestor(net.attestorEnv(i)))
+    exec = startExecutor(net.executorEnv())
   }, 120_000)
 
   afterAll(() => {
+    exec?.stop()
     workers.forEach((w) => w.stop())
     net?.stop()
   })
@@ -29,23 +32,21 @@ describe('acceptance: stress / throughput', () => {
   }
 
   test(
-    'sustained: 200 packets committed in order with no gaps or loss',
+    'sustained: 200 packets committed AND received intact, in order, no gaps',
     async () => {
       const N = 200
-      for (let i = 1; i <= N; i++) await trySend(net.sctx, net.appSrc, msg(i))
-
-      const reached = await pollUntil(
-        async () => (await inboundNonce(net.dctx, net.appDst, net.appSrc)) === BigInt(N),
-        90_000,
-      )
-      expect(reached).toBe(true)
-
-      const EMPTY = ('0x' + '0'.repeat(64)) as Hex
+      const sent: Hex[] = []
       for (let i = 1; i <= N; i++) {
-        const h = await inboundPayloadHash(net.dctx, net.appDst, net.appSrc, BigInt(i))
-        expect(h).not.toBe(EMPTY) // every nonce committed — no gaps, no loss
+        const m = msg(i)
+        sent.push(m)
+        await trySend(net.sctx, net.appSrc, m)
       }
+      // all committed in order (commit cursor reaches N)
+      expect(await pollUntil(async () => (await inboundNonce(net.dctx, net.appDst, net.appSrc)) === BigInt(N), 150_000)).toBe(true)
+      // all received by the app, intact and in order (no loss / no duplicate)
+      expect(await pollUntil(async () => (await collectEchoed(net.dctx, net.appDst)).length === N, 150_000)).toBe(true)
+      expect(await collectEchoed(net.dctx, net.appDst)).toEqual(sent)
     },
-    120_000,
+    180_000,
   )
 })

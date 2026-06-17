@@ -30,6 +30,9 @@ type Parsed struct {
 	PayloadHash common.Hash
 	SrcEid      uint32
 	Nonce       uint64
+	Sender      [32]byte       // source OApp, bytes32
+	Receiver    common.Address // destination OApp
+	DstEid      uint32
 }
 
 func keccak(parts ...[]byte) common.Hash {
@@ -50,6 +53,8 @@ func Parse(encoded []byte) (Parsed, error) {
 	header := encoded[:81]
 	guid := common.BytesToHash(encoded[81:113])
 	message := encoded[113:]
+	var sender [32]byte
+	copy(sender[:], header[13:45])
 	return Parsed{
 		Header:      header,
 		Guid:        guid,
@@ -57,5 +62,8 @@ func Parse(encoded []byte) (Parsed, error) {
 		PayloadHash: keccak(guid.Bytes(), message),
 		Nonce:       binary.BigEndian.Uint64(header[1:9]),
 		SrcEid:      binary.BigEndian.Uint32(header[9:13]),
+		Sender:      sender,
+		DstEid:      binary.BigEndian.Uint32(header[45:49]),
+		Receiver:    common.BytesToAddress(header[49:81]),
 	}, nil
 }
