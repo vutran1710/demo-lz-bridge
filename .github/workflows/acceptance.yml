@@ -1,0 +1,40 @@
+name: Acceptance (e2e + stress)
+
+# The acceptance baseline is the program's ultimate Conformance/Acceptance gate.
+# It is RED-BY-DESIGN until P3 (attestor worker) lands, so it runs on-demand and on
+# pushes to main only — not as a blocking PR check — until it is expected green.
+# Flip to `pull_request` + remove continue-on-error at P3.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  acceptance:
+    name: e2e + stress (informational until P3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: build contracts
+        run: pnpm run build:contracts
+      - name: e2e
+        continue-on-error: true
+        run: pnpm run test:e2e
+      - name: stress
+        continue-on-error: true
+        run: pnpm run test:stress
