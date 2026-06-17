@@ -6,32 +6,24 @@ import (
 	"strconv"
 )
 
+// Config holds the attestor's pathway-independent settings. Routing (which chains/pathways) comes
+// from the pathway package (PATHWAYS_JSON, or the flat SRC_RPC/DST_RPC/... single-pathway fallback).
 type Config struct {
-	AttestorID    string
-	SrcRPC        string
-	DstRPC        string
-	SrcEndpoint   string // 0x... source Endpoint (emits PacketSent)
-	DstReceiveLib string // 0x... destination ReceiveLib (verify target)
-	PrivateKey    string // hex, no 0x
-	Confirmations uint64
-	PollMs        int
-	CursorPath    string
+	AttestorID string
+	PrivateKey string // one DVN identity, used to verify on every destination chain
+	PollMs     int
+	CursorPath string
 }
 
 func Load() (*Config, error) {
 	c := &Config{
-		AttestorID:    os.Getenv("ATTESTOR_ID"),
-		SrcRPC:        os.Getenv("SRC_RPC"),
-		DstRPC:        os.Getenv("DST_RPC"),
-		SrcEndpoint:   os.Getenv("SRC_ENDPOINT"),
-		DstReceiveLib: os.Getenv("DST_RECEIVE_LIB"),
-		PrivateKey:    os.Getenv("ATTESTOR_KEY"),
-		CursorPath:    os.Getenv("CURSOR_PATH"),
+		AttestorID: os.Getenv("ATTESTOR_ID"),
+		PrivateKey: os.Getenv("ATTESTOR_KEY"),
+		PollMs:     int(atou(os.Getenv("POLL_MS"), 200)),
+		CursorPath: os.Getenv("CURSOR_PATH"),
 	}
-	c.Confirmations = atou(os.Getenv("CONFIRMATIONS"), 1)
-	c.PollMs = int(atou(os.Getenv("POLL_MS"), 200))
-	if c.SrcRPC == "" || c.DstRPC == "" || c.PrivateKey == "" || c.SrcEndpoint == "" || c.DstReceiveLib == "" {
-		return nil, errors.New("missing required config (SRC_RPC,DST_RPC,SRC_ENDPOINT,DST_RECEIVE_LIB,ATTESTOR_KEY)")
+	if c.PrivateKey == "" {
+		return nil, errors.New("missing ATTESTOR_KEY")
 	}
 	if c.CursorPath == "" {
 		c.CursorPath = "/tmp/attestor-" + c.AttestorID + ".cursor"

@@ -20,7 +20,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-sig; cancel() }()
 
-	log.Printf("executor started id=%s signers=%d src=%s dst=%s", cfg.ID, len(cfg.Keys), cfg.SrcRPC, cfg.DstRPC)
+	log.Printf("executor started id=%s signers=%d", cfg.ID, len(cfg.Keys))
 	if err := executor.New(cfg).Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("run: %v", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -16,104 +15,123 @@ import (
 
 	"github.com/onematrix/bridge/worker/internal/chain"
 	"github.com/onematrix/bridge/worker/internal/packet"
+	"github.com/onematrix/bridge/worker/internal/pathway"
 	"github.com/onematrix/bridge/worker/internal/signer"
 )
 
+// Config holds pathway-independent executor settings. Routing comes from the pathway package.
 type Config struct {
-	ID            string
-	SrcRPC        string
-	DstRPC        string
-	DstReceiveLib common.Address
-	DstEndpoint   common.Address
-	Keys          []string // signer pool (hex, with or without 0x)
-	Confirmations uint64
-	PollMs        int
+	ID     string
+	Keys   []string // signer pool (hex); reused per destination chain
+	PollMs int
 }
 
 func Load() (*Config, error) {
-	c := &Config{
-		ID:            envOr("EXECUTOR_ID", "exec"),
-		SrcRPC:        os.Getenv("SRC_RPC"),
-		DstRPC:        os.Getenv("DST_RPC"),
-		DstReceiveLib: common.HexToAddress(os.Getenv("DST_RECEIVE_LIB")),
-		DstEndpoint:   common.HexToAddress(os.Getenv("DST_ENDPOINT")),
-		Confirmations: atou(os.Getenv("CONFIRMATIONS"), 1),
-		PollMs:        int(atou(os.Getenv("POLL_MS"), 100)),
-	}
+	c := &Config{ID: envOr("EXECUTOR_ID", "exec"), PollMs: int(atou(os.Getenv("POLL_MS"), 100))}
 	for _, k := range strings.Split(os.Getenv("EXECUTOR_KEYS"), ",") {
 		if s := strings.TrimSpace(k); s != "" {
 			c.Keys = append(c.Keys, s)
 		}
 	}
-	if c.SrcRPC == "" || c.DstRPC == "" || len(c.Keys) == 0 || os.Getenv("DST_RECEIVE_LIB") == "" || os.Getenv("DST_ENDPOINT") == "" {
-		return nil, errors.New("missing config (SRC_RPC,DST_RPC,DST_RECEIVE_LIB,DST_ENDPOINT,EXECUTOR_KEYS)")
+	if len(c.Keys) == 0 {
+		return nil, errors.New("missing EXECUTOR_KEYS")
 	}
 	return c, nil
 }
 
-type Executor struct {
-	cfg     *Config
-	clients *chain.Clients
-	reader  *Reader
-	sched   *Scheduler
-	pool    *Pool
-	signers map[string]*signer.Signer
-	running map[string]bool
-	mu      sync.Mutex
-}
+type Executor struct{ cfg *Config }
 
 func New(cfg *Config) *Executor { return &Executor{cfg: cfg} }
 
+// Run services every configured pathway concurrently; each gets its own per-destination signer
+// pool, scheduler and commit/deliver loop.
 func (e *Executor) Run(ctx context.Context) error {
-	clients, err := chain.Dial(e.cfg.SrcRPC, e.cfg.DstRPC)
+	pws, err := pathway.Load()
 	if err != nil {
 		return err
 	}
-	reader, err := NewReader(clients.Dst, e.cfg.DstReceiveLib, e.cfg.DstEndpoint)
-	if err != nil {
-		return err
-	}
-	e.clients = clients
-	e.reader = reader
-	e.sched = NewScheduler()
-	e.signers = map[string]*signer.Signer{}
-	e.running = map[string]bool{}
-	ids := []string{}
-	for i, k := range e.cfg.Keys {
-		id := fmt.Sprintf("%s#%d", e.cfg.ID, i)
-		s, err := signer.New(ctx, id, clients.Dst, k)
+	var wg sync.WaitGroup
+	for _, pw := range pws {
+		r, err := e.newRunner(ctx, pw)
 		if err != nil {
 			return err
 		}
-		e.signers[id] = s
-		ids = append(ids, id)
+		wg.Add(1)
+		go func() { defer wg.Done(); r.run(ctx) }()
 	}
-	e.pool = NewPool(ids)
-
-	go e.watch(ctx)
-	e.manage(ctx)
+	wg.Wait()
 	return nil
 }
 
-// watch fills the scheduler from source PacketSent events.
-func (e *Executor) watch(ctx context.Context) {
+type runner struct {
+	id            string
+	clients       *chain.Clients
+	reader        *Reader
+	sched         *Scheduler
+	pool          *Pool
+	signers       map[string]*signer.Signer
+	receiveLib    common.Address
+	endpoint      common.Address
+	confirmations uint64
+	pollMs        int
+
+	mu      sync.Mutex
+	running map[string]bool
+}
+
+func (e *Executor) newRunner(ctx context.Context, pw pathway.Pathway) (*runner, error) {
+	clients, err := chain.Dial(pw.SrcRPC, pw.DstRPC)
+	if err != nil {
+		return nil, err
+	}
+	receiveLib := common.HexToAddress(pw.DstReceiveLib)
+	endpoint := common.HexToAddress(pw.DstEndpoint)
+	reader, err := NewReader(clients.Dst, receiveLib, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	r := &runner{
+		id: e.cfg.ID + ":" + pw.ID, clients: clients, reader: reader, sched: NewScheduler(),
+		signers: map[string]*signer.Signer{}, receiveLib: receiveLib, endpoint: endpoint,
+		confirmations: pw.Confirmations, pollMs: e.cfg.PollMs, running: map[string]bool{},
+	}
+	ids := []string{}
+	for i, k := range e.cfg.Keys {
+		id := fmt.Sprintf("%s#%d", r.id, i)
+		s, err := signer.New(ctx, id, clients.Dst, k)
+		if err != nil {
+			return nil, err
+		}
+		r.signers[id] = s
+		ids = append(ids, id)
+	}
+	r.pool = NewPool(ids)
+	return r, nil
+}
+
+func (r *runner) run(ctx context.Context) {
+	go r.watch(ctx)
+	r.manage(ctx)
+}
+
+func (r *runner) watch(ctx context.Context) {
 	var last uint64
-	t := time.NewTicker(time.Duration(e.cfg.PollMs) * time.Millisecond)
+	t := time.NewTicker(time.Duration(r.pollMs) * time.Millisecond)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			head, err := e.clients.HeadBlock(ctx)
-			if err != nil || head+1 < e.cfg.Confirmations {
+			head, err := r.clients.HeadBlock(ctx)
+			if err != nil || head+1 < r.confirmations {
 				continue
 			}
-			safe := head + 1 - e.cfg.Confirmations
+			safe := head + 1 - r.confirmations
 			if safe <= last {
 				continue
 			}
-			logs, err := e.clients.FilterPacketSent(ctx, last+1, safe)
+			logs, err := r.clients.FilterPacketSent(ctx, last+1, safe)
 			if err != nil {
 				continue
 			}
@@ -122,9 +140,8 @@ func (e *Executor) watch(ctx context.Context) {
 				if perr != nil {
 					continue
 				}
-				e.sched.Add(channelKey(p), Item{
-					Header: p.Header, Guid: p.Guid, Message: p.Message,
-					PayloadHash: p.PayloadHash, Nonce: p.Nonce,
+				r.sched.Add(channelKey(p), Item{
+					Header: p.Header, Guid: p.Guid, Message: p.Message, PayloadHash: p.PayloadHash, Nonce: p.Nonce,
 				})
 			}
 			last = safe
@@ -132,22 +149,21 @@ func (e *Executor) watch(ctx context.Context) {
 	}
 }
 
-// manage spawns one worker goroutine per active channel.
-func (e *Executor) manage(ctx context.Context) {
-	t := time.NewTicker(time.Duration(e.cfg.PollMs) * time.Millisecond)
+func (r *runner) manage(ctx context.Context) {
+	t := time.NewTicker(time.Duration(r.pollMs) * time.Millisecond)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, ch := range e.sched.Channels() {
-				e.mu.Lock()
-				if !e.running[ch] {
-					e.running[ch] = true
-					go e.worker(ctx, ch)
+			for _, ch := range r.sched.Channels() {
+				r.mu.Lock()
+				if !r.running[ch] {
+					r.running[ch] = true
+					go r.worker(ctx, ch)
 				}
-				e.mu.Unlock()
+				r.mu.Unlock()
 			}
 		}
 	}
@@ -155,58 +171,57 @@ func (e *Executor) manage(ctx context.Context) {
 
 var errRetry = errors.New("retry")
 
-func (e *Executor) worker(ctx context.Context, channel string) {
-	backoff := time.Duration(e.cfg.PollMs) * time.Millisecond
+func (r *runner) worker(ctx context.Context, channel string) {
+	backoff := time.Duration(r.pollMs) * time.Millisecond
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		it, ok := e.sched.Ready(channel)
+		it, ok := r.sched.Ready(channel)
 		if !ok {
 			time.Sleep(backoff)
 			continue
 		}
-		id, ok := e.pool.Lease(channel)
+		id, ok := r.pool.Lease(channel)
 		if !ok {
 			time.Sleep(backoff)
 			continue
 		}
-		if err := e.deliver(ctx, e.signers[id], channel, it); err != nil {
+		if err := r.deliver(ctx, r.signers[id], channel, it); err != nil {
 			time.Sleep(backoff)
 			continue
 		}
-		e.sched.Done(channel, it.Nonce)
+		r.sched.Done(channel, it.Nonce)
 	}
 }
 
 // deliver advances one message: commit (if needed, gap-free) then execute. Returns errRetry until done.
-func (e *Executor) deliver(ctx context.Context, sgn *signer.Signer, channel string, it Item) error {
+func (r *runner) deliver(ctx context.Context, sgn *signer.Signer, channel string, it Item) error {
 	headerHash := crypto.Keccak256Hash(it.Header)
-	committed, err := e.reader.Committed(ctx, headerHash, it.PayloadHash)
+	committed, err := r.reader.Committed(ctx, headerHash, it.PayloadHash)
 	if err != nil {
 		return err
 	}
 	if !committed {
-		v, err := e.reader.Verifiable(ctx, it.Header, it.PayloadHash)
+		v, err := r.reader.Verifiable(ctx, it.Header, it.PayloadHash)
 		if err != nil || !v {
-			return errRetry // threshold not met yet
-		}
-		if err := sgn.Commit(ctx, e.cfg.DstReceiveLib, it.Header, common.Hash(it.PayloadHash)); err != nil {
 			return errRetry
 		}
-		if !e.poll(ctx, func() bool { c, _ := e.reader.Committed(ctx, headerHash, it.PayloadHash); return c }) {
+		if err := sgn.Commit(ctx, r.receiveLib, it.Header, common.Hash(it.PayloadHash)); err != nil {
+			return errRetry
+		}
+		if !poll(ctx, func() bool { c, _ := r.reader.Committed(ctx, headerHash, it.PayloadHash); return c }) {
 			return errRetry
 		}
 	}
-	// execute (lzReceive). bind estimates gas first, so a reverting receiver errors here (parked).
 	srcEid, sender := decodeChannel(channel)
 	o := signer.Origin{SrcEid: srcEid, Sender: sender, Nonce: it.Nonce}
 	receiver := channelReceiver(channel)
-	if err := sgn.Execute(ctx, e.cfg.DstEndpoint, o, receiver, common.Hash(it.Guid), it.Message); err != nil {
-		return errRetry // receiver reverted / not yet executable → stays parked
+	if err := sgn.Execute(ctx, r.endpoint, o, receiver, common.Hash(it.Guid), it.Message); err != nil {
+		return errRetry
 	}
-	if !e.poll(ctx, func() bool {
-		d, _ := e.reader.Delivered(ctx, receiver, srcEid, sender, it.Nonce, common.Hash(it.PayloadHash))
+	if !poll(ctx, func() bool {
+		d, _ := r.reader.Delivered(ctx, receiver, srcEid, sender, it.Nonce, common.Hash(it.PayloadHash))
 		return d
 	}) {
 		return errRetry
@@ -214,7 +229,7 @@ func (e *Executor) deliver(ctx context.Context, sgn *signer.Signer, channel stri
 	return nil
 }
 
-func (e *Executor) poll(ctx context.Context, cond func() bool) bool {
+func poll(ctx context.Context, cond func() bool) bool {
 	for i := 0; i < 100; i++ {
 		if ctx.Err() != nil {
 			return false
@@ -227,7 +242,6 @@ func (e *Executor) poll(ctx context.Context, cond func() bool) bool {
 	return false
 }
 
-// channelKey encodes srcEid, sender (bytes32 hex) and receiver into a stable string.
 func channelKey(p packet.Parsed) string {
 	return fmt.Sprintf("%d|%x|%s", p.SrcEid, p.Sender, p.Receiver.Hex())
 }
@@ -260,5 +274,3 @@ func atou(s string, d uint64) uint64 {
 	}
 	return v
 }
-
-var _ = log.Printf

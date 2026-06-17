@@ -21,7 +21,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-sig; cancel() }()
 
-	log.Printf("attestor started id=%s src=%s dst=%s", cfg.AttestorID, cfg.SrcRPC, cfg.DstRPC)
+	log.Printf("attestor started id=%s", cfg.AttestorID)
 	if err := attestor.New(cfg).Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("run: %v", err)
 	}
