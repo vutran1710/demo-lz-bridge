@@ -4,12 +4,14 @@ pragma solidity ^0.8.24;
 import "./interfaces/IEndpoint.sol";
 import "./interfaces/IMessageLib.sol";
 import "./interfaces/ILayerZeroReceiver.sol";
+import "./interfaces/IExecutor.sol";
 import "./libraries/PacketCodec.sol";
 
 /// @notice Immutable messaging endpoint. Owns the channel state (nonces, committed payload hashes)
 /// and the per-OApp library/config registry. Ordered commit + parked-retry semantics (spec §7).
 contract Endpoint is IEndpoint {
     uint32 public immutable eid;
+    address public immutable executorConfig; // ExecutorConfig registry (address(0) = forward all gas)
 
     // ---- config registry ----
     mapping(address => mapping(uint32 => address)) public sendLib; // oapp => dstEid => lib
@@ -35,8 +37,9 @@ contract Endpoint is IEndpoint {
     event PacketNilified(address receiver, uint32 srcEid, bytes32 sender, uint64 nonce);
     event PacketBurnt(address receiver, uint32 srcEid, bytes32 sender, uint64 nonce);
 
-    constructor(uint32 _eid) {
+    constructor(uint32 _eid, address _executorConfig) {
         eid = _eid;
+        executorConfig = _executorConfig;
     }
 
     modifier onlyOappOrDelegate(address oapp) {
@@ -101,7 +104,16 @@ contract Endpoint is IEndpoint {
         _inboundPayloadHash[receiver][o.srcEid][o.sender][o.nonce] = EMPTY;
         _executedNonce[receiver][o.srcEid][o.sender] = o.nonce;
 
-        ILayerZeroReceiver(receiver).lzReceive{value: msg.value}(o, guid, message, msg.sender, extraData);
+        // supply the configured gas budget to the receiver (predictable cost); 0 => forward all gas
+        uint256 g;
+        if (executorConfig != address(0)) {
+            g = IExecutorConfig(executorConfig).getConfig(receiver, eid).lzReceiveGas;
+        }
+        if (g == 0) {
+            ILayerZeroReceiver(receiver).lzReceive{value: msg.value}(o, guid, message, msg.sender, extraData);
+        } else {
+            ILayerZeroReceiver(receiver).lzReceive{value: msg.value, gas: g}(o, guid, message, msg.sender, extraData);
+        }
         emit PacketDelivered(o, receiver);
     }
 

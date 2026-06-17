@@ -12,6 +12,8 @@ export const ABI = {
   Endpoint: artifact('Endpoint.sol/Endpoint.json'),
   SendLib: artifact('SendLib.sol/SendLib.json'),
   ReceiveLib: artifact('ReceiveLib.sol/ReceiveLib.json'),
+  ExecutorConfig: artifact('ExecutorConfig.sol/ExecutorConfig.json'),
+  PriceFeed: artifact('PriceFeed.sol/PriceFeed.json'),
   AppEcho: artifact('AppEcho.sol/AppEcho.json'),
   AppRevert: artifact('AppRevert.sol/AppRevert.json'),
 }
